@@ -50,17 +50,18 @@ button {
 .pet-shell.has-settings {
   align-content: start;
   justify-items: center;
-  grid-template-rows: minmax(148px, calc(var(--pet-size) * 0.72)) auto;
+  grid-template-rows: var(--pet-canvas-size) minmax(0, 1fr);
   gap: 8px;
-  padding: 10px;
+  padding: 16px;
 }
 
 .pet-stage {
   position: relative;
-  width: var(--pet-size);
-  height: var(--pet-size);
+  width: var(--pet-canvas-size);
+  height: var(--pet-canvas-size);
   display: grid;
   place-items: center;
+  background: transparent;
   cursor: grab;
   touch-action: none;
 }
@@ -94,7 +95,8 @@ button {
 .pet-atlas-wrap {
   display: grid;
   place-items: center;
-  overflow: hidden;
+  overflow: visible;
+  background: transparent;
 }
 
 .pet-atlas {
@@ -145,7 +147,7 @@ button {
 
 .settings-popover {
   width: min(370px, calc(100vw - 20px));
-  max-height: 390px;
+  max-height: min(390px, calc(100vh - var(--pet-canvas-size) - 30px));
   padding: 12px;
   display: flex;
   flex-direction: column;

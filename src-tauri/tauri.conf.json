@@ -20,6 +20,7 @@
         "minHeight": 180,
         "decorations": false,
         "transparent": true,
+        "backgroundColor": [0, 0, 0, 0],
         "alwaysOnTop": true,
         "resizable": false,
         "skipTaskbar": true,

@@ -86,7 +86,9 @@ const renderModeKey = "codex-pet:render-mode";
 const defaultPetSize = 236;
 const settingsWidth = 390;
 const settingsHeight = 570;
-const windowPadding = 42;
+const settingsPanelReserve = 410;
+const petCanvasPadding = 48;
+const windowPadding = petCanvasPadding + 32;
 const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -133,8 +135,12 @@ function App() {
 
   const latestMessage = events[events.length - 1]?.message ?? "准备就绪";
   const statusLabel = stateLabels[currentState] ?? "空闲";
+  const visualIdentity = visual
+    ? `${visual.kind}-${visual.path}-${visual.row ?? "single"}-${currentState}`
+    : `default-${currentState}`;
   const shellStyle = {
     "--pet-size": `${petSize}px`,
+    "--pet-canvas-size": `${petSize + petCanvasPadding}px`,
   } as CSSProperties;
 
   useEffect(() => {
@@ -445,7 +451,13 @@ function App() {
         onPointerCancel={endPetDrag}
         onContextMenu={openSettings}
       >
-        <PetVisualView visual={visual} state={currentState} renderMode={renderMode} petSize={petSize} />
+        <PetVisualView
+          key={visualIdentity}
+          visual={visual}
+          state={currentState}
+          renderMode={renderMode}
+          petSize={petSize}
+        />
       </section>
 
       {settingsOpen && (
@@ -609,10 +621,16 @@ function PetVisualView({
       "--atlas-row-offset": `${row * frameHeight * -1}px`,
       "--atlas-end-x": `${frames * frameWidth * -1}px`,
     } as CSSProperties;
+    const visualKey = `${visual.path}-${state}-${row}-${frames}-${totalMs}-${frameWidth}x${frameHeight}`;
 
     return (
-      <div className={`pet-atlas-wrap render-${renderMode}`} style={style} aria-label={`宠物状态 ${state}`}>
-        <div className="pet-atlas" />
+      <div
+        key={visualKey}
+        className={`pet-atlas-wrap render-${renderMode}`}
+        style={style}
+        aria-label={`宠物状态 ${state}`}
+      >
+        <div className="pet-atlas" key={visualKey} />
       </div>
     );
   }
@@ -696,7 +714,10 @@ async function resizeWindow(settingsOpen: boolean, petSize: number) {
   }
 
   const size = settingsOpen
-    ? new LogicalSize(settingsWidth, settingsHeight)
+    ? new LogicalSize(
+        Math.max(settingsWidth, petSize + windowPadding),
+        Math.max(settingsHeight, petSize + settingsPanelReserve),
+      )
     : new LogicalSize(petSize + windowPadding, petSize + windowPadding);
 
   await getCurrentWindow().setSize(size);
