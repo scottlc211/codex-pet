@@ -19,7 +19,7 @@ html,
 body,
 #root {
   width: 100%;
-  min-width: 320px;
+  min-width: 220px;
   height: 100%;
   margin: 0;
   overflow: hidden;
@@ -46,6 +46,11 @@ button {
   user-select: none;
 }
 
+.pet-shell.is-compact {
+  padding: 10px;
+  grid-template-rows: 1fr;
+}
+
 .pet-stage {
   position: relative;
   display: grid;
@@ -53,17 +58,84 @@ button {
   min-height: 0;
 }
 
-.pet-image {
+.window-controls {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  z-index: 5;
+  display: inline-flex;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid rgba(15, 59, 58, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 10px 24px rgba(16, 32, 31, 0.14);
+  transform: translateX(-50%);
+  backdrop-filter: blur(16px);
+}
+
+.pet-shell.is-compact .window-controls {
+  top: 0;
+}
+
+.pet-image,
+.pet-atlas-wrap {
   width: min(78vw, 230px);
   height: min(78vw, 230px);
-  object-fit: contain;
   filter: drop-shadow(0 18px 20px rgba(16, 32, 31, 0.24));
   transform-origin: bottom center;
   animation: idle-breathe 3.8s ease-in-out infinite;
 }
 
-.pet-stage.is-running .pet-image {
+.pet-image {
+  object-fit: contain;
+}
+
+.pet-atlas-wrap {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.pet-atlas {
+  width: var(--frame-width);
+  height: var(--frame-height);
+  background-image: var(--atlas-url);
+  background-repeat: no-repeat;
+  background-size: var(--atlas-width) var(--atlas-height);
+  background-position-y: var(--atlas-row-offset);
+  transform: scale(1.1);
+  transform-origin: center;
+  animation: atlas-steps var(--atlas-duration) steps(var(--atlas-frames)) infinite;
+}
+
+.pet-shell.is-compact .pet-atlas {
+  transform: scale(0.94);
+}
+
+.state-thinking .pet-image,
+.state-working .pet-image,
+.state-running_command .pet-image,
+.state-editing_file .pet-image,
+.state-sweeping .pet-image,
+.state-carrying .pet-image,
+.state-thinking .pet-atlas-wrap,
+.state-working .pet-atlas-wrap,
+.state-running_command .pet-atlas-wrap,
+.state-editing_file .pet-atlas-wrap,
+.state-sweeping .pet-atlas-wrap,
+.state-carrying .pet-atlas-wrap {
   animation: working-bounce 1.05s ease-in-out infinite;
+}
+
+.state-error .pet-image,
+.state-error .pet-atlas-wrap {
+  animation: error-shake 360ms ease-in-out infinite;
+}
+
+.state-success .pet-image,
+.state-success .pet-atlas-wrap {
+  animation: success-pop 720ms ease-out infinite;
 }
 
 .status-pill {
@@ -89,7 +161,10 @@ button {
   flex: 0 0 auto;
 }
 
-.pet-stage.is-running .status-pill svg {
+.state-thinking .status-pill svg,
+.state-working .status-pill svg,
+.state-running_command .status-pill svg,
+.state-editing_file .status-pill svg {
   animation: spin 1s linear infinite;
 }
 
@@ -106,6 +181,10 @@ button {
     0 20px 42px rgba(16, 32, 31, 0.2),
     inset 0 1px 0 rgba(255, 255, 255, 0.75);
   backdrop-filter: blur(18px);
+}
+
+.pet-shell.is-compact .control-panel {
+  display: none;
 }
 
 .panel-header {
@@ -148,10 +227,31 @@ h1 {
     color 160ms ease;
 }
 
+.window-controls .icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(247, 255, 253, 0.8);
+}
+
 .icon-button:hover {
   border-color: rgba(31, 138, 131, 0.4);
   color: #12645f;
   background: #e9fbf7;
+}
+
+.icon-button.danger:hover {
+  border-color: rgba(217, 45, 32, 0.28);
+  color: #b42318;
+  background: #fff2ef;
+}
+
+.drag-handle {
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
 }
 
 .latest-message {
@@ -174,6 +274,12 @@ h1 {
   color: #526461;
   font-size: 11px;
   font-weight: 750;
+}
+
+.path-row {
+  display: grid;
+  grid-template-columns: 1fr 34px;
+  gap: 6px;
 }
 
 input,
@@ -318,6 +424,15 @@ textarea:focus {
   white-space: nowrap;
 }
 
+@keyframes atlas-steps {
+  from {
+    background-position-x: 0;
+  }
+  to {
+    background-position-x: var(--atlas-end-x);
+  }
+}
+
 @keyframes idle-breathe {
   0%,
   100% {
@@ -335,6 +450,29 @@ textarea:focus {
   }
   50% {
     transform: translateY(-8px) rotate(1deg);
+  }
+}
+
+@keyframes success-pop {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-6px) scale(1.06);
+  }
+}
+
+@keyframes error-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
   }
 }
 
