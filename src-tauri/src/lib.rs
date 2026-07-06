@@ -547,7 +547,7 @@ fn load_image_as_pet(dir: &Path) -> Option<PetCandidate> {
 }
 
 fn load_image_file_as_pet(path: &Path) -> Option<PetCandidate> {
-    if !is_supported_image(path) {
+    if !is_supported_standalone_theme_image(path) {
         return None;
     }
 
@@ -610,7 +610,7 @@ fn collect_image_paths(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         return;
     }
     if root.is_file() {
-        if is_supported_image(root) {
+        if is_supported_standalone_theme_image(root) {
             out.push(root.to_path_buf());
         }
         return;
@@ -622,7 +622,7 @@ fn collect_image_paths(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             collect_image_paths(&path, depth + 1, out);
-        } else if is_supported_image(&path) {
+        } else if is_supported_standalone_theme_image(&path) {
             out.push(path);
         }
     }
@@ -658,6 +658,16 @@ fn is_supported_image(path: &Path) -> bool {
     matches!(
         extension.to_ascii_lowercase().as_str(),
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "apng"
+    )
+}
+
+fn is_supported_standalone_theme_image(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "apng"
     )
 }
 

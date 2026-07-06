@@ -66,6 +66,7 @@ type ModalDragSession = {
   startY: number;
   width: number;
   height: number;
+  bounds: DragBounds;
 };
 
 type PetVisual = {
@@ -666,18 +667,37 @@ function App() {
     }
 
     event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
+    const modal = event.currentTarget;
+    const rect = modal.getBoundingClientRect();
+    const pointerId = event.pointerId;
+    const fallbackBounds = modalViewportBounds(rect.width, rect.height);
     modalDragRef.current = {
-      pointerId: event.pointerId,
+      pointerId,
       startPointerX: event.clientX,
       startPointerY: event.clientY,
       startX: rect.left,
       startY: rect.top,
       width: rect.width,
       height: rect.height,
+      bounds: fallbackBounds,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setSettingsModalPosition({ x: rect.left, y: rect.top });
+    modal.setPointerCapture(pointerId);
+    setSettingsModalPosition(clampWindowPosition(rect.left, rect.top, fallbackBounds));
+
+    void modalMonitorBounds(rect.width, rect.height)
+      .then((bounds) => {
+        const drag = modalDragRef.current;
+        if (!drag || drag.pointerId !== pointerId) {
+          return;
+        }
+
+        drag.bounds = bounds;
+        setSettingsModalPosition((current) => {
+          const position = current ?? { x: drag.startX, y: drag.startY };
+          return clampWindowPosition(position.x, position.y, bounds);
+        });
+      })
+      .catch(() => undefined);
   }
 
   function moveSettingsModal(event: PointerEvent<HTMLElement>) {
@@ -688,10 +708,7 @@ function App() {
 
     const nextX = drag.startX + event.clientX - drag.startPointerX;
     const nextY = drag.startY + event.clientY - drag.startPointerY;
-    setSettingsModalPosition({
-      x: clamp(nextX, 8, window.innerWidth - drag.width - 8),
-      y: clamp(nextY, 8, window.innerHeight - drag.height - 8),
-    });
+    setSettingsModalPosition(clampWindowPosition(nextX, nextY, drag.bounds));
   }
 
   function endSettingsModalDrag(event: PointerEvent<HTMLElement>) {
@@ -1119,6 +1136,64 @@ function monitorDragBounds(monitor: Monitor, windowSize: PhysicalSize): DragBoun
     minY,
     maxX: Math.max(minX, minX + monitor.workArea.size.width - windowSize.width),
     maxY: Math.max(minY, minY + monitor.workArea.size.height - windowSize.height),
+  };
+}
+
+function modalViewportBounds(width: number, height: number): DragBounds {
+  const minX = 8;
+  const minY = 8;
+  return {
+    minX,
+    minY,
+    maxX: Math.max(minX, window.innerWidth - width - minX),
+    maxY: Math.max(minY, window.innerHeight - height - minY),
+  };
+}
+
+async function modalMonitorBounds(width: number, height: number): Promise<DragBounds> {
+  if (!isTauriRuntime) {
+    return modalViewportBounds(width, height);
+  }
+
+  const appWindow = getCurrentWindow();
+  const [position, scaleFactor, monitor] = await Promise.all([
+    appWindow.outerPosition(),
+    appWindow.scaleFactor(),
+    currentMonitor().then((value) => value ?? primaryMonitor()),
+  ]);
+  const viewportBounds = modalViewportBounds(width, height);
+  if (!monitor) {
+    return viewportBounds;
+  }
+
+  const margin = 8;
+  const minX = (monitor.workArea.position.x - position.x) / scaleFactor + margin;
+  const minY = (monitor.workArea.position.y - position.y) / scaleFactor + margin;
+  const maxX =
+    (monitor.workArea.position.x + monitor.workArea.size.width - position.x) / scaleFactor -
+    width -
+    margin;
+  const maxY =
+    (monitor.workArea.position.y + monitor.workArea.size.height - position.y) / scaleFactor -
+    height -
+    margin;
+
+  return intersectDragBounds(viewportBounds, {
+    minX,
+    minY,
+    maxX: Math.max(minX, maxX),
+    maxY: Math.max(minY, maxY),
+  });
+}
+
+function intersectDragBounds(base: DragBounds, next: DragBounds): DragBounds {
+  const minX = Math.max(base.minX, next.minX);
+  const minY = Math.max(base.minY, next.minY);
+  return {
+    minX,
+    minY,
+    maxX: Math.max(minX, Math.min(base.maxX, next.maxX)),
+    maxY: Math.max(minY, Math.min(base.maxY, next.maxY)),
   };
 }
 
