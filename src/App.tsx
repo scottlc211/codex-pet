@@ -47,6 +47,17 @@ type PetState =
 
 type RenderMode = "smooth" | "pixelated";
 type SettingsSection = "general" | "theme" | "work";
+type ModalPosition = { x: number; y: number };
+
+type ModalDragSession = {
+  pointerId: number;
+  startPointerX: number;
+  startPointerY: number;
+  startX: number;
+  startY: number;
+  width: number;
+  height: number;
+};
 
 type PetVisual = {
   kind: "image" | "atlas";
@@ -90,8 +101,10 @@ const workdirKey = "codex-pet:workdir";
 const petSizeKey = "codex-pet:pet-size";
 const renderModeKey = "codex-pet:render-mode";
 const defaultPetSize = 236;
-const settingsWidth = 760;
-const settingsHeight = 520;
+const settingsWidth = 980;
+const settingsHeight = 640;
+const themePreviewPetSize = 112;
+const themePreviewCanvasSize = 156;
 const petCanvasPadding = 48;
 const windowPadding = petCanvasPadding + 32;
 const isTauriRuntime =
@@ -121,6 +134,7 @@ function App() {
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [settingsModalPosition, setSettingsModalPosition] = useState<ModalPosition | null>(null);
   const [task, setTask] = useState("");
   const [running, setRunning] = useState(false);
   const [currentState, setCurrentState] = useState<PetState>("idle");
@@ -131,6 +145,7 @@ function App() {
   ]);
   const idleTimerRef = useRef<number | null>(null);
   const dragRef = useRef<DragSession | null>(null);
+  const modalDragRef = useRef<ModalDragSession | null>(null);
   const settingsReturnPositionRef = useRef<PhysicalPosition | null>(null);
 
   const visual = useMemo(() => {
@@ -149,6 +164,17 @@ function App() {
   const shellStyle = {
     "--pet-size": `${petSize}px`,
     "--pet-canvas-size": `${petSize + petCanvasPadding}px`,
+  } as CSSProperties;
+  const settingsModalStyle = settingsModalPosition
+    ? ({
+        left: `${settingsModalPosition.x}px`,
+        top: `${settingsModalPosition.y}px`,
+        transform: "none",
+      } as CSSProperties)
+    : undefined;
+  const themePreviewStyle = {
+    "--pet-size": `${themePreviewPetSize}px`,
+    "--pet-canvas-size": `${themePreviewCanvasSize}px`,
   } as CSSProperties;
 
   useEffect(() => {
@@ -441,6 +467,7 @@ function App() {
   async function openSettingsModal() {
     setContextMenuOpen(false);
     setSettingsSection("general");
+    setSettingsModalPosition(null);
     if (isTauriRuntime) {
       try {
         settingsReturnPositionRef.current = await getCurrentWindow().outerPosition();
@@ -453,6 +480,7 @@ function App() {
 
   function closeSettings() {
     setSettingsOpen(false);
+    setSettingsModalPosition(null);
   }
 
   async function minimizeWindow() {
@@ -499,6 +527,59 @@ function App() {
     }
   }
 
+  function startSettingsModalDrag(event: PointerEvent<HTMLElement>) {
+    const target = event.target as HTMLElement;
+    if (
+      event.button !== 0 ||
+      !target.closest(".settings-drag-handle") ||
+      target.closest("button,input,select,textarea")
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    modalDragRef.current = {
+      pointerId: event.pointerId,
+      startPointerX: event.clientX,
+      startPointerY: event.clientY,
+      startX: rect.left,
+      startY: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSettingsModalPosition({ x: rect.left, y: rect.top });
+  }
+
+  function moveSettingsModal(event: PointerEvent<HTMLElement>) {
+    const drag = modalDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const nextX = drag.startX + event.clientX - drag.startPointerX;
+    const nextY = drag.startY + event.clientY - drag.startPointerY;
+    setSettingsModalPosition({
+      x: clamp(nextX, 8, window.innerWidth - drag.width - 8),
+      y: clamp(nextY, 8, window.innerHeight - drag.height - 8),
+    });
+  }
+
+  function endSettingsModalDrag(event: PointerEvent<HTMLElement>) {
+    const drag = modalDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    modalDragRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be released by the OS.
+    }
+  }
+
   return (
     <main className={`pet-shell ${settingsOpen ? "has-settings" : ""}`} style={shellStyle}>
       <section
@@ -529,9 +610,20 @@ function App() {
       )}
 
       {settingsOpen && (
-        <section className="settings-modal" role="dialog" aria-modal="true" aria-label="桌宠设置" onContextMenu={(event) => event.preventDefault()}>
+        <section
+          className="settings-modal"
+          style={settingsModalStyle}
+          role="dialog"
+          aria-modal="true"
+          aria-label="桌宠设置"
+          onPointerDown={startSettingsModalDrag}
+          onPointerMove={moveSettingsModal}
+          onPointerUp={endSettingsModalDrag}
+          onPointerCancel={endSettingsModalDrag}
+          onContextMenu={(event) => event.preventDefault()}
+        >
           <aside className="settings-sidebar">
-            <header>
+            <header className="settings-drag-handle">
               <span className="eyebrow">Codex Pet</span>
               <h1>设置</h1>
             </header>
@@ -572,7 +664,7 @@ function App() {
           </aside>
 
           <section className="settings-content">
-            <header className="settings-content-header">
+            <header className="settings-content-header settings-drag-handle">
               <div>
                 <span className="status-chip">{statusLabel}</span>
                 <p>{latestMessage}</p>
@@ -625,8 +717,8 @@ function App() {
                     type="button"
                     onClick={selectDefaultPet}
                   >
-                    <div className="theme-preview" style={{ "--pet-size": "72px", "--pet-canvas-size": "88px" } as CSSProperties}>
-                      <PetVisualView visual={null} state="idle" renderMode={renderMode} petSize={72} />
+                    <div className="theme-preview" style={themePreviewStyle}>
+                      <PetVisualView visual={null} state="idle" renderMode={renderMode} petSize={themePreviewPetSize} />
                     </div>
                     <div>
                       <strong>默认主题</strong>
@@ -643,8 +735,13 @@ function App() {
                       title={candidate.path}
                       onClick={() => selectCandidate(candidate)}
                     >
-                      <div className="theme-preview" style={{ "--pet-size": "72px", "--pet-canvas-size": "88px" } as CSSProperties}>
-                        <PetVisualView visual={resolveVisual(candidate, "idle")} state="idle" renderMode={renderMode} petSize={72} />
+                      <div className="theme-preview" style={themePreviewStyle}>
+                        <PetVisualView
+                          visual={resolveVisual(candidate, "idle")}
+                          state="idle"
+                          renderMode={renderMode}
+                          petSize={themePreviewPetSize}
+                        />
                       </div>
                       <div>
                         <strong>{candidate.name}</strong>
@@ -871,7 +968,11 @@ function clampPetSize(value: number) {
   if (!Number.isFinite(value)) {
     return defaultPetSize;
   }
-  return Math.max(150, Math.min(330, value));
+  return clamp(value, 150, 330);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function readPetSize() {

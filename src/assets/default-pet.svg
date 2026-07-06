@@ -18,5 +18,4 @@
   <path d="M142 188C152 198 168 198 178 188" stroke="#0F3B3A" stroke-width="8" stroke-linecap="round"/>
   <path d="M96 229C70 239 46 227 40 204" stroke="#0F3B3A" stroke-width="10" stroke-linecap="round"/>
   <path d="M224 229C250 239 274 227 280 204" stroke="#0F3B3A" stroke-width="10" stroke-linecap="round"/>
-  <rect x="132" y="236" width="56" height="18" rx="9" fill="#0F3B3A" opacity=".16"/>
 </svg>
