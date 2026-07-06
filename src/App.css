@@ -42,7 +42,7 @@ button {
   height: 100%;
   display: grid;
   place-items: center;
-  padding: 16px;
+  padding: 12px;
   background: transparent;
   user-select: none;
 }
@@ -63,10 +63,11 @@ button {
 
 .pet-stage {
   position: relative;
-  width: var(--pet-canvas-size);
-  height: var(--pet-canvas-size);
+  width: var(--pet-size);
+  height: var(--pet-size);
   display: grid;
   place-items: center;
+  overflow: visible;
   background: transparent;
   cursor: grab;
   touch-action: none;
@@ -524,6 +525,18 @@ h1 {
 
 .path-row.wide-action {
   grid-template-columns: 1fr 122px;
+}
+
+.work-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px 32px;
+  gap: 6px;
+}
+
+.terminal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 122px;
+  gap: 6px;
 }
 
 .split-row {

@@ -8,13 +8,21 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from "react";
-import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
+import { LogicalSize, PhysicalPosition, type PhysicalSize } from "@tauri-apps/api/dpi";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  currentMonitor,
+  cursorPosition,
+  getCurrentWindow,
+  primaryMonitor,
+  type Monitor,
+} from "@tauri-apps/api/window";
 import {
   Check,
+  FileSearch,
   FolderOpen,
+  FolderSearch,
   Import,
   LoaderCircle,
   Minus,
@@ -48,6 +56,7 @@ type PetState =
 type RenderMode = "smooth" | "pixelated";
 type SettingsSection = "general" | "theme" | "work";
 type ModalPosition = { x: number; y: number };
+type DragBounds = { minX: number; minY: number; maxX: number; maxY: number };
 
 type ModalDragSession = {
   pointerId: number;
@@ -91,22 +100,32 @@ type DragSession = {
   startWindowX: number;
   startWindowY: number;
   scaleFactor: number;
+  bounds: DragBounds | null;
   previousState: PetState;
   latestState: PetState;
   pendingFrame: number | null;
+};
+
+type TerminalOption = {
+  id: string;
+  label: string;
 };
 
 const packagePathKey = "codex-pet:package-path";
 const workdirKey = "codex-pet:workdir";
 const petSizeKey = "codex-pet:pet-size";
 const renderModeKey = "codex-pet:render-mode";
+const terminalKey = "codex-pet:terminal";
 const defaultPetSize = 236;
 const settingsWidth = 980;
 const settingsHeight = 640;
 const themePreviewPetSize = 112;
 const themePreviewCanvasSize = 156;
-const petCanvasPadding = 48;
-const windowPadding = petCanvasPadding + 32;
+const petCanvasPadding = 0;
+const windowPadding = 24;
+const cursorHotInsetRatioX = 0.12;
+const cursorHotInsetRatioY = 0.08;
+const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
 const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -131,6 +150,8 @@ function App() {
   const [workdir, setWorkdir] = useState(() => localStorage.getItem(workdirKey) ?? "");
   const [petSize, setPetSize] = useState(() => readPetSize());
   const [renderMode, setRenderMode] = useState<RenderMode>(() => readRenderMode());
+  const [terminalId, setTerminalId] = useState(() => localStorage.getItem(terminalKey) ?? autoTerminal.id);
+  const [terminals, setTerminals] = useState<TerminalOption[]>([autoTerminal]);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
@@ -186,6 +207,7 @@ function App() {
       pushEvent({ kind: "monitor.error", message: String(error), state: "error" });
     });
     void refreshCandidates();
+    void refreshTerminals();
 
     const unlistenPromise = listen<CodexEvent>("codex-event", (event) => {
       const next = event.payload;
@@ -239,6 +261,70 @@ function App() {
   }, [renderMode]);
 
   useEffect(() => {
+    localStorage.setItem(terminalKey, terminalId);
+  }, [terminalId]);
+
+  useEffect(() => {
+    if (!isTauriRuntime) {
+      return;
+    }
+
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    let ignoringCursor = false;
+    let timer: number | null = null;
+
+    async function setIgnoreCursorEvents(next: boolean) {
+      if (ignoringCursor === next) {
+        return;
+      }
+      ignoringCursor = next;
+      await appWindow.setIgnoreCursorEvents(next);
+    }
+
+    async function updateCursorHitArea() {
+      if (disposed) {
+        return;
+      }
+
+      try {
+        if (settingsOpen || contextMenuOpen || isDragging()) {
+          await setIgnoreCursorEvents(false);
+        } else {
+          const [cursor, position, size] = await Promise.all([
+            cursorPosition(),
+            appWindow.outerPosition(),
+            appWindow.outerSize(),
+          ]);
+          const insetX = Math.max(6, Math.round(size.width * cursorHotInsetRatioX));
+          const insetY = Math.max(6, Math.round(size.height * cursorHotInsetRatioY));
+          const insideHotArea =
+            cursor.x >= position.x + insetX &&
+            cursor.x <= position.x + size.width - insetX &&
+            cursor.y >= position.y + insetY &&
+            cursor.y <= position.y + size.height - insetY;
+          await setIgnoreCursorEvents(!insideHotArea);
+        }
+      } catch {
+        await setIgnoreCursorEvents(false).catch(() => undefined);
+      } finally {
+        if (!disposed) {
+          timer = window.setTimeout(updateCursorHitArea, ignoringCursor ? 80 : 140);
+        }
+      }
+    }
+
+    void updateCursorHitArea();
+    return () => {
+      disposed = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+      void appWindow.setIgnoreCursorEvents(false).catch(() => undefined);
+    };
+  }, [settingsOpen, contextMenuOpen, petSize]);
+
+  useEffect(() => {
     if (packagePath) {
       localStorage.setItem(packagePathKey, packagePath);
     } else {
@@ -267,6 +353,23 @@ function App() {
       setPackagePath(found[0].path);
     }
     pushEvent({ kind: "scan", message: `发现 ${found.length} 个可用宠物资源`, state: "idle" });
+  }
+
+  async function refreshTerminals() {
+    if (!isTauriRuntime) {
+      return;
+    }
+
+    try {
+      const found = await invoke<TerminalOption[]>("list_terminals");
+      const next = found.length > 0 ? found : [autoTerminal];
+      setTerminals(next);
+      if (!next.some((terminal) => terminal.id === terminalId)) {
+        setTerminalId(autoTerminal.id);
+      }
+    } catch (error) {
+      pushEvent({ kind: "terminal.scan.error", message: String(error), state: "error" });
+    }
   }
 
   async function importPackage() {
@@ -376,6 +479,10 @@ function App() {
       const appWindow = getCurrentWindow();
       const position = await appWindow.outerPosition();
       const scaleFactor = await appWindow.scaleFactor();
+      const [outerSize, monitor] = await Promise.all([
+        appWindow.outerSize(),
+        currentMonitor().then((value) => value ?? primaryMonitor()),
+      ]);
 
       dragRef.current = {
         pointerId: event.pointerId,
@@ -385,6 +492,7 @@ function App() {
         startWindowX: position.x,
         startWindowY: position.y,
         scaleFactor,
+        bounds: monitor ? monitorDragBounds(monitor, outerSize) : null,
         previousState: currentState,
         latestState: "dragging",
         pendingFrame: null,
@@ -431,11 +539,11 @@ function App() {
       }
 
       currentDrag.pendingFrame = null;
+      const nextX = Math.round(currentDrag.startWindowX + deltaX * currentDrag.scaleFactor);
+      const nextY = Math.round(currentDrag.startWindowY + deltaY * currentDrag.scaleFactor);
+      const boundedPosition = clampWindowPosition(nextX, nextY, currentDrag.bounds);
       void getCurrentWindow().setPosition(
-        new PhysicalPosition(
-          Math.round(currentDrag.startWindowX + deltaX * currentDrag.scaleFactor),
-          Math.round(currentDrag.startWindowY + deltaY * currentDrag.scaleFactor),
-        ),
+        new PhysicalPosition(boundedPosition.x, boundedPosition.y),
       );
     });
   }
@@ -518,11 +626,31 @@ function App() {
     try {
       await invoke("open_terminal", {
         cwd: workdir || null,
+        terminal: terminalId,
       });
       pushEvent({ kind: "terminal.opened", message: "已打开终端", state: "idle" });
     } catch (error) {
       setCurrentState("error");
       pushEvent({ kind: "terminal.error", message: String(error), state: "error" });
+      scheduleIdle();
+    }
+  }
+
+  async function pickWorkPath(kind: "file" | "directory") {
+    if (!isTauriRuntime) {
+      pushEvent({ kind: "browser", message: "浏览器预览不支持选择本地路径", state: "idle" });
+      return;
+    }
+
+    try {
+      const selected = await invoke<string | null>("pick_work_path", { kind });
+      if (selected) {
+        setWorkdir(selected);
+        pushEvent({ kind: "path.selected", message: `已选择：${selected}`, state: "idle" });
+      }
+    } catch (error) {
+      setCurrentState("error");
+      pushEvent({ kind: "path.select.error", message: String(error), state: "error" });
       scheduleIdle();
     }
   }
@@ -774,13 +902,32 @@ function App() {
                   <h2>工作任务</h2>
                 </div>
                 <label className="field">
-                  <span>工作目录</span>
-                  <div className="path-row wide-action">
+                  <span>工作路径</span>
+                  <div className="work-path-row">
                     <input
                       value={workdir}
                       onChange={(event) => setWorkdir(event.currentTarget.value)}
-                      placeholder="留空则使用当前目录"
+                      placeholder="输入目录或文件路径，留空则使用用户目录"
                     />
+                    <button className="icon-button" type="button" title="选择目录" onClick={() => pickWorkPath("directory")}>
+                      <FolderSearch size={16} />
+                    </button>
+                    <button className="icon-button" type="button" title="选择文件" onClick={() => pickWorkPath("file")}>
+                      <FileSearch size={16} />
+                    </button>
+                  </div>
+                </label>
+
+                <label className="field">
+                  <span>终端</span>
+                  <div className="terminal-row">
+                    <select value={terminalId} onChange={(event) => setTerminalId(event.currentTarget.value)}>
+                      {terminals.map((terminal) => (
+                        <option key={terminal.id} value={terminal.id}>
+                          {terminal.label}
+                        </option>
+                      ))}
+                    </select>
                     <button className="secondary-button" type="button" onClick={openTerminal}>
                       <FolderOpen size={16} />
                       <span>打开终端</span>
@@ -962,6 +1109,28 @@ async function resizeWindow(settingsOpen: boolean, petSize: number, returnPositi
   } else if (returnPosition) {
     await appWindow.setPosition(returnPosition);
   }
+}
+
+function monitorDragBounds(monitor: Monitor, windowSize: PhysicalSize): DragBounds {
+  const minX = monitor.workArea.position.x;
+  const minY = monitor.workArea.position.y;
+  return {
+    minX,
+    minY,
+    maxX: Math.max(minX, minX + monitor.workArea.size.width - windowSize.width),
+    maxY: Math.max(minY, minY + monitor.workArea.size.height - windowSize.height),
+  };
+}
+
+function clampWindowPosition(x: number, y: number, bounds: DragBounds | null) {
+  if (!bounds) {
+    return { x, y };
+  }
+
+  return {
+    x: clamp(x, bounds.minX, bounds.maxX),
+    y: clamp(y, bounds.minY, bounds.maxY),
+  };
 }
 
 function clampPetSize(value: number) {
