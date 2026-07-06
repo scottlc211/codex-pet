@@ -237,6 +237,12 @@ fn run_codex_task(app: AppHandle, prompt: String, cwd: Option<String>) -> Result
     Ok(())
 }
 
+#[tauri::command]
+fn open_terminal(cwd: Option<String>) -> Result<(), String> {
+    let cwd = resolve_workdir(cwd)?;
+    open_terminal_at(&cwd)
+}
+
 fn emit_codex_event(
     app: &AppHandle,
     kind: &str,
@@ -948,6 +954,58 @@ fn has_git_root(path: &Path) -> bool {
     false
 }
 
+fn resolve_workdir(cwd: Option<String>) -> Result<PathBuf, String> {
+    let path = cwd
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    if !path.exists() {
+        return Err("工作目录不存在".to_string());
+    }
+    if !path.is_dir() {
+        return Err("工作目录不是文件夹".to_string());
+    }
+    path.canonicalize()
+        .map_err(|error| format!("解析工作目录失败：{error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn open_terminal_at(cwd: &Path) -> Result<(), String> {
+    Command::new("cmd")
+        .arg("/C")
+        .arg("start")
+        .arg("")
+        .arg("cmd")
+        .arg("/K")
+        .arg(format!("cd /d \"{}\"", cwd.display()))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开终端失败：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn open_terminal_at(cwd: &Path) -> Result<(), String> {
+    Command::new("open")
+        .arg("-a")
+        .arg("Terminal")
+        .arg(cwd)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开终端失败：{error}"))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_terminal_at(cwd: &Path) -> Result<(), String> {
+    for terminal in ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal"] {
+        if Command::new(terminal).current_dir(cwd).spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    Err("未找到可用终端程序".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -956,7 +1014,8 @@ pub fn run() {
             find_pet_candidates,
             import_pet_package,
             start_codex_session_monitor,
-            run_codex_task
+            run_codex_task,
+            open_terminal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

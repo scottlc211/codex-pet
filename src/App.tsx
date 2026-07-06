@@ -13,13 +13,18 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  Check,
+  FolderOpen,
   Import,
   LoaderCircle,
   Minus,
+  Palette,
   Play,
   RefreshCw,
   Settings,
+  SlidersHorizontal,
   Sparkles,
+  Terminal,
   X,
 } from "lucide-react";
 import defaultPet from "./assets/default-pet.svg";
@@ -41,6 +46,7 @@ type PetState =
   | "carrying";
 
 type RenderMode = "smooth" | "pixelated";
+type SettingsSection = "general" | "theme" | "work";
 
 type PetVisual = {
   kind: "image" | "atlas";
@@ -84,9 +90,8 @@ const workdirKey = "codex-pet:workdir";
 const petSizeKey = "codex-pet:pet-size";
 const renderModeKey = "codex-pet:render-mode";
 const defaultPetSize = 236;
-const settingsWidth = 390;
-const settingsHeight = 570;
-const settingsPanelReserve = 410;
+const settingsWidth = 760;
+const settingsHeight = 520;
 const petCanvasPadding = 48;
 const windowPadding = petCanvasPadding + 32;
 const isTauriRuntime =
@@ -113,7 +118,9 @@ function App() {
   const [workdir, setWorkdir] = useState(() => localStorage.getItem(workdirKey) ?? "");
   const [petSize, setPetSize] = useState(() => readPetSize());
   const [renderMode, setRenderMode] = useState<RenderMode>(() => readRenderMode());
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [task, setTask] = useState("");
   const [running, setRunning] = useState(false);
   const [currentState, setCurrentState] = useState<PetState>("idle");
@@ -124,6 +131,7 @@ function App() {
   ]);
   const idleTimerRef = useRef<number | null>(null);
   const dragRef = useRef<DragSession | null>(null);
+  const settingsReturnPositionRef = useRef<PhysicalPosition | null>(null);
 
   const visual = useMemo(() => {
     if (!activePet) {
@@ -188,9 +196,16 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem(petSizeKey, String(petSize));
-    void resizeWindow(settingsOpen, petSize).catch((error) => {
-      pushEvent({ kind: "window.resize.error", message: String(error), state: "error" });
-    });
+    const returnPosition = settingsReturnPositionRef.current;
+    void resizeWindow(settingsOpen, petSize, returnPosition)
+      .then(() => {
+        if (!settingsOpen && returnPosition) {
+          settingsReturnPositionRef.current = null;
+        }
+      })
+      .catch((error) => {
+        pushEvent({ kind: "window.resize.error", message: String(error), state: "error" });
+      });
   }, [petSize, settingsOpen]);
 
   useEffect(() => {
@@ -247,6 +262,9 @@ function App() {
       setActivePet(imported);
       setPackagePath(imported.path);
       setCurrentState("success");
+      if (!candidates.some((candidate) => candidate.path === imported.path)) {
+        setCandidates((current) => [...current, imported]);
+      }
       pushEvent({ kind: "import.ok", message: `已导入：${imported.name}`, state: "success" });
       scheduleIdle();
     } catch (error) {
@@ -270,6 +288,7 @@ function App() {
 
     setRunning(true);
     setSettingsOpen(false);
+    setContextMenuOpen(false);
     setCurrentState("thinking");
     pushEvent({ kind: "queued", message: "任务已发送", state: "thinking" });
 
@@ -313,12 +332,13 @@ function App() {
   }
 
   async function startPetDrag(event: PointerEvent<HTMLElement>) {
-    if (event.button !== 0 || (event.target as HTMLElement).closest(".settings-popover")) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest(".settings-modal,.context-tablist")) {
       return;
     }
 
     event.preventDefault();
     setSettingsOpen(false);
+    setContextMenuOpen(false);
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 
     if (!isTauriRuntime) {
@@ -412,8 +432,22 @@ function App() {
     setCurrentState(running ? "working" : drag.previousState === "idle" ? "idle" : drag.previousState);
   }
 
-  function openSettings(event: MouseEvent<HTMLElement>) {
+  function openContextMenu(event: MouseEvent<HTMLElement>) {
     event.preventDefault();
+    setContextMenuOpen(true);
+    setSettingsOpen(false);
+  }
+
+  async function openSettingsModal() {
+    setContextMenuOpen(false);
+    setSettingsSection("general");
+    if (isTauriRuntime) {
+      try {
+        settingsReturnPositionRef.current = await getCurrentWindow().outerPosition();
+      } catch (error) {
+        pushEvent({ kind: "window.position.error", message: String(error), state: "error" });
+      }
+    }
     setSettingsOpen(true);
   }
 
@@ -440,6 +474,31 @@ function App() {
     pushEvent({ kind: "pet.selected", message: `已选择：${candidate.name}`, state: "idle" });
   }
 
+  function selectDefaultPet() {
+    setActivePet(null);
+    setPackagePath("");
+    setCurrentState("idle");
+    pushEvent({ kind: "pet.selected", message: "已选择：默认主题", state: "idle" });
+  }
+
+  async function openTerminal() {
+    if (!isTauriRuntime) {
+      pushEvent({ kind: "browser", message: "浏览器预览不支持打开终端", state: "idle" });
+      return;
+    }
+
+    try {
+      await invoke("open_terminal", {
+        cwd: workdir || null,
+      });
+      pushEvent({ kind: "terminal.opened", message: "已打开终端", state: "idle" });
+    } catch (error) {
+      setCurrentState("error");
+      pushEvent({ kind: "terminal.error", message: String(error), state: "error" });
+      scheduleIdle();
+    }
+  }
+
   return (
     <main className={`pet-shell ${settingsOpen ? "has-settings" : ""}`} style={shellStyle}>
       <section
@@ -449,7 +508,7 @@ function App() {
         onPointerMove={movePet}
         onPointerUp={endPetDrag}
         onPointerCancel={endPetDrag}
-        onContextMenu={openSettings}
+        onContextMenu={openContextMenu}
       >
         <PetVisualView
           key={visualIdentity}
@@ -460,127 +519,209 @@ function App() {
         />
       </section>
 
+      {contextMenuOpen && (
+        <div className="context-tablist" role="tablist" aria-label="桌宠菜单" onContextMenu={(event) => event.preventDefault()}>
+          <button type="button" role="tab" aria-selected="true" onClick={openSettingsModal}>
+            <Settings size={16} />
+            <span>设置</span>
+          </button>
+        </div>
+      )}
+
       {settingsOpen && (
-        <section className="settings-popover" role="dialog" aria-label="桌宠设置" onContextMenu={(event) => event.preventDefault()}>
-          <header className="settings-header">
-            <div>
+        <section className="settings-modal" role="dialog" aria-modal="true" aria-label="桌宠设置" onContextMenu={(event) => event.preventDefault()}>
+          <aside className="settings-sidebar">
+            <header>
               <span className="eyebrow">Codex Pet</span>
               <h1>设置</h1>
-            </div>
-            <div className="settings-actions">
-              <button className="icon-button" type="button" title="刷新宠物" onClick={refreshCandidates}>
-                <RefreshCw size={16} />
+            </header>
+            <nav className="settings-menu" aria-label="设置菜单">
+              <button
+                className={settingsSection === "general" ? "active" : ""}
+                type="button"
+                onClick={() => setSettingsSection("general")}
+              >
+                <SlidersHorizontal size={17} />
+                <span>通用</span>
               </button>
+              <button
+                className={settingsSection === "theme" ? "active" : ""}
+                type="button"
+                onClick={() => setSettingsSection("theme")}
+              >
+                <Palette size={17} />
+                <span>主题</span>
+              </button>
+              <button
+                className={settingsSection === "work" ? "active" : ""}
+                type="button"
+                onClick={() => setSettingsSection("work")}
+              >
+                <Terminal size={17} />
+                <span>工作任务</span>
+              </button>
+            </nav>
+            <div className="sidebar-actions">
               <button className="icon-button" type="button" title="最小化" onClick={minimizeWindow}>
                 <Minus size={16} />
               </button>
               <button className="icon-button danger" type="button" title="关闭程序" onClick={closeWindow}>
                 <X size={16} />
               </button>
+            </div>
+          </aside>
+
+          <section className="settings-content">
+            <header className="settings-content-header">
+              <div>
+                <span className="status-chip">{statusLabel}</span>
+                <p>{latestMessage}</p>
+              </div>
               <button className="icon-button" type="button" title="关闭设置" onClick={closeSettings}>
-                <Settings size={16} />
+                <X size={16} />
               </button>
-            </div>
-          </header>
+            </header>
 
-          <div className="status-line" aria-live="polite">
-            <span>{statusLabel}</span>
-            <p>{latestMessage}</p>
-          </div>
+            {settingsSection === "general" && (
+              <div className="settings-page">
+                <div className="section-title">
+                  <h2>通用</h2>
+                </div>
+                <label className="field">
+                  <span>桌宠大小</span>
+                  <div className="range-row">
+                    <input
+                      type="range"
+                      min="150"
+                      max="330"
+                      step="5"
+                      value={petSize}
+                      onChange={(event) => setPetSize(clampPetSize(Number(event.currentTarget.value)))}
+                    />
+                    <output>{petSize}px</output>
+                  </div>
+                </label>
+                <label className="field">
+                  <span>渲染方式</span>
+                  <select value={renderMode} onChange={(event) => setRenderMode(event.currentTarget.value as RenderMode)}>
+                    <option value="smooth">平滑</option>
+                    <option value="pixelated">像素</option>
+                  </select>
+                </label>
+              </div>
+            )}
 
-          <label className="field">
-            <span>主题</span>
-            <select
-              value={activePet?.path ?? ""}
-              onChange={(event) => {
-                const candidate = candidates.find((item) => item.path === event.currentTarget.value);
-                if (candidate) {
-                  selectCandidate(candidate);
-                }
-              }}
-            >
-              <option value="">默认</option>
-              {candidates.map((candidate) => (
-                <option key={candidate.path} value={candidate.path}>
-                  {candidate.name}
-                </option>
-              ))}
-            </select>
-          </label>
+            {settingsSection === "theme" && (
+              <div className="settings-page">
+                <div className="section-title with-action">
+                  <h2>主题</h2>
+                  <button className="icon-button" type="button" title="刷新主题" onClick={refreshCandidates}>
+                    <RefreshCw size={16} />
+                  </button>
+                </div>
+                <div className="theme-grid" aria-label="主题列表">
+                  <button
+                    className={`theme-card ${activePet ? "" : "active"}`}
+                    type="button"
+                    onClick={selectDefaultPet}
+                  >
+                    <div className="theme-preview" style={{ "--pet-size": "72px", "--pet-canvas-size": "88px" } as CSSProperties}>
+                      <PetVisualView visual={null} state="idle" renderMode={renderMode} petSize={72} />
+                    </div>
+                    <div>
+                      <strong>默认主题</strong>
+                      <span>内置</span>
+                    </div>
+                    {!activePet && <Check size={16} />}
+                  </button>
 
-          <label className="field">
-            <span>动画包 / 图片路径</span>
-            <div className="path-row">
-              <input
-                value={packagePath}
-                onChange={(event) => setPackagePath(event.currentTarget.value)}
-                placeholder={"D:\\A_STUDY\\codex-pet\\pet-assets\\my-pet.zip"}
-              />
-              <button className="icon-button" type="button" title="导入动画包" onClick={importPackage}>
-                <Import size={16} />
-              </button>
-            </div>
-          </label>
+                  {candidates.map((candidate) => (
+                    <button
+                      className={`theme-card ${activePet?.path === candidate.path ? "active" : ""}`}
+                      key={candidate.path}
+                      type="button"
+                      title={candidate.path}
+                      onClick={() => selectCandidate(candidate)}
+                    >
+                      <div className="theme-preview" style={{ "--pet-size": "72px", "--pet-canvas-size": "88px" } as CSSProperties}>
+                        <PetVisualView visual={resolveVisual(candidate, "idle")} state="idle" renderMode={renderMode} petSize={72} />
+                      </div>
+                      <div>
+                        <strong>{candidate.name}</strong>
+                        <span>{candidate.kind}</span>
+                      </div>
+                      {activePet?.path === candidate.path && <Check size={16} />}
+                    </button>
+                  ))}
+                </div>
 
-          <div className="split-row">
-            <label className="field">
-              <span>大小</span>
-              <input
-                type="range"
-                min="150"
-                max="330"
-                step="5"
-                value={petSize}
-                onChange={(event) => setPetSize(clampPetSize(Number(event.currentTarget.value)))}
-              />
-            </label>
+                <label className="field">
+                  <span>动画包 / 图片路径</span>
+                  <div className="path-row">
+                    <input
+                      value={packagePath}
+                      onChange={(event) => setPackagePath(event.currentTarget.value)}
+                      placeholder={"D:\\A_STUDY\\codex-pet\\pet-assets\\my-pet.zip"}
+                    />
+                    <button className="icon-button" type="button" title="导入动画包" onClick={importPackage}>
+                      <Import size={16} />
+                    </button>
+                  </div>
+                </label>
+              </div>
+            )}
 
-            <label className="field">
-              <span>渲染</span>
-              <select value={renderMode} onChange={(event) => setRenderMode(event.currentTarget.value as RenderMode)}>
-                <option value="smooth">平滑</option>
-                <option value="pixelated">像素</option>
-              </select>
-            </label>
-          </div>
+            {settingsSection === "work" && (
+              <div className="settings-page">
+                <div className="section-title">
+                  <h2>工作任务</h2>
+                </div>
+                <label className="field">
+                  <span>工作目录</span>
+                  <div className="path-row wide-action">
+                    <input
+                      value={workdir}
+                      onChange={(event) => setWorkdir(event.currentTarget.value)}
+                      placeholder="留空则使用当前目录"
+                    />
+                    <button className="secondary-button" type="button" onClick={openTerminal}>
+                      <FolderOpen size={16} />
+                      <span>打开终端</span>
+                    </button>
+                  </div>
+                </label>
 
-          <form className="task-form" onSubmit={submitTask}>
-            <label className="field">
-              <span>工作目录</span>
-              <input
-                value={workdir}
-                onChange={(event) => setWorkdir(event.currentTarget.value)}
-                placeholder="留空则使用当前目录"
-              />
-            </label>
+                <form className="task-form" onSubmit={submitTask}>
+                  <label className="field">
+                    <span>任务</span>
+                    <textarea
+                      value={task}
+                      rows={3}
+                      onChange={(event) => setTask(event.currentTarget.value)}
+                      placeholder="让 Codex 检查这个项目并总结下一步"
+                    />
+                  </label>
 
-            <label className="field">
-              <span>任务</span>
-              <textarea
-                value={task}
-                rows={3}
-                onChange={(event) => setTask(event.currentTarget.value)}
-                placeholder="让 Codex 检查这个项目并总结下一步"
-              />
-            </label>
+                  <button className="run-button" type="submit" disabled={running || !task.trim()}>
+                    {running ? <LoaderCircle size={18} /> : <Play size={18} />}
+                    <span>{running ? "处理中" : "发送给 Codex"}</span>
+                  </button>
+                </form>
 
-            <button className="run-button" type="submit" disabled={running || !task.trim()}>
-              {running ? <LoaderCircle size={18} /> : <Play size={18} />}
-              <span>{running ? "处理中" : "发送给 Codex"}</span>
-            </button>
-          </form>
-
-          <div className="event-log" aria-label="Codex 状态日志">
-            <Sparkles size={15} />
-            <ul>
-              {events.slice(-3).map((event, index) => (
-                <li key={`${event.kind}-${index}`}>
-                  {event.sessionId ? `${shortSession(event.sessionId)} · ` : ""}
-                  {event.message}
-                </li>
-              ))}
-            </ul>
-          </div>
+                <div className="event-log" aria-label="Codex 状态日志">
+                  <Sparkles size={15} />
+                  <ul>
+                    {events.slice(-3).map((event, index) => (
+                      <li key={`${event.kind}-${index}`}>
+                        {event.sessionId ? `${shortSession(event.sessionId)} · ` : ""}
+                        {event.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+          </section>
         </section>
       )}
     </main>
@@ -708,19 +849,22 @@ function normalizeEventState(event: CodexEvent): PetState | null {
   }
 }
 
-async function resizeWindow(settingsOpen: boolean, petSize: number) {
+async function resizeWindow(settingsOpen: boolean, petSize: number, returnPosition: PhysicalPosition | null) {
   if (!isTauriRuntime) {
     return;
   }
 
   const size = settingsOpen
-    ? new LogicalSize(
-        Math.max(settingsWidth, petSize + windowPadding),
-        Math.max(settingsHeight, petSize + settingsPanelReserve),
-      )
+    ? new LogicalSize(settingsWidth, settingsHeight)
     : new LogicalSize(petSize + windowPadding, petSize + windowPadding);
 
-  await getCurrentWindow().setSize(size);
+  const appWindow = getCurrentWindow();
+  await appWindow.setSize(size);
+  if (settingsOpen) {
+    await appWindow.center();
+  } else if (returnPosition) {
+    await appWindow.setPosition(returnPosition);
+  }
 }
 
 function clampPetSize(value: number) {
