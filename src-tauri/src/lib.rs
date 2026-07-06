@@ -471,6 +471,8 @@ fn codex_atlas_states(spritesheet: &Path) -> BTreeMap<String, PetVisual> {
         ("attention", "jumping"),
         ("error", "failed"),
         ("dragging", "running"),
+        ("dragging_left", "running-left"),
+        ("dragging_right", "running-right"),
         ("sleeping", "idle"),
         ("sweeping", "running"),
         ("carrying", "running"),
@@ -505,6 +507,8 @@ fn resolve_missing_state_aliases(states: &mut BTreeMap<String, PetVisual>) {
         ("success", "attention"),
         ("error", "idle"),
         ("dragging", "working"),
+        ("dragging_left", "dragging"),
+        ("dragging_right", "dragging"),
     ];
 
     for (state, fallback) in aliases {
@@ -780,6 +784,10 @@ impl CodexSessionMonitor {
         }
 
         let offset = self.offsets.entry(file_path.to_path_buf()).or_insert(0);
+        if *offset == 0 && size > 0 {
+            *offset = size;
+            return;
+        }
         if size <= *offset {
             return;
         }

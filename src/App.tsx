@@ -6,21 +6,19 @@ import {
   type CSSProperties,
   type FormEvent,
   type MouseEvent,
+  type PointerEvent,
 } from "react";
-import { LogicalSize } from "@tauri-apps/api/dpi";
+import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  CheckCircle2,
-  Grip,
   Import,
   LoaderCircle,
-  Maximize2,
-  Minimize2,
+  Minus,
   Play,
   RefreshCw,
-  Shrink,
+  Settings,
   Sparkles,
   X,
 } from "lucide-react";
@@ -37,8 +35,12 @@ type PetState =
   | "success"
   | "error"
   | "dragging"
+  | "dragging_left"
+  | "dragging_right"
   | "sweeping"
   | "carrying";
+
+type RenderMode = "smooth" | "pixelated";
 
 type PetVisual = {
   kind: "image" | "atlas";
@@ -64,8 +66,27 @@ type CodexEvent = {
   sessionId?: string;
 };
 
+type DragSession = {
+  pointerId: number;
+  startScreenX: number;
+  startScreenY: number;
+  lastScreenX: number;
+  startWindowX: number;
+  startWindowY: number;
+  scaleFactor: number;
+  previousState: PetState;
+  latestState: PetState;
+  pendingFrame: number | null;
+};
+
 const packagePathKey = "codex-pet:package-path";
 const workdirKey = "codex-pet:workdir";
+const petSizeKey = "codex-pet:pet-size";
+const renderModeKey = "codex-pet:render-mode";
+const defaultPetSize = 236;
+const settingsWidth = 390;
+const settingsHeight = 570;
+const windowPadding = 42;
 const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -79,6 +100,8 @@ const stateLabels: Record<PetState, string> = {
   success: "完成",
   error: "错误",
   dragging: "拖动",
+  dragging_left: "向左",
+  dragging_right: "向右",
   sweeping: "压缩",
   carrying: "搬运",
 };
@@ -86,9 +109,11 @@ const stateLabels: Record<PetState, string> = {
 function App() {
   const [packagePath, setPackagePath] = useState(() => localStorage.getItem(packagePathKey) ?? "");
   const [workdir, setWorkdir] = useState(() => localStorage.getItem(workdirKey) ?? "");
+  const [petSize, setPetSize] = useState(() => readPetSize());
+  const [renderMode, setRenderMode] = useState<RenderMode>(() => readRenderMode());
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [task, setTask] = useState("");
   const [running, setRunning] = useState(false);
-  const [compact, setCompact] = useState(false);
   const [currentState, setCurrentState] = useState<PetState>("idle");
   const [activePet, setActivePet] = useState<PetCandidate | null>(null);
   const [candidates, setCandidates] = useState<PetCandidate[]>([]);
@@ -96,6 +121,7 @@ function App() {
     { kind: "idle", message: "准备就绪", state: "idle" },
   ]);
   const idleTimerRef = useRef<number | null>(null);
+  const dragRef = useRef<DragSession | null>(null);
 
   const visual = useMemo(() => {
     if (!activePet) {
@@ -105,9 +131,11 @@ function App() {
     return resolveVisual(activePet, currentState);
   }, [activePet, currentState]);
 
-  const headline = running ? "Codex 正在处理" : "轻量桌宠待命";
   const latestMessage = events[events.length - 1]?.message ?? "准备就绪";
   const statusLabel = stateLabels[currentState] ?? "空闲";
+  const shellStyle = {
+    "--pet-size": `${petSize}px`,
+  } as CSSProperties;
 
   useEffect(() => {
     if (!isTauriRuntime) {
@@ -117,17 +145,23 @@ function App() {
     void invoke("start_codex_session_monitor").catch((error) => {
       pushEvent({ kind: "monitor.error", message: String(error), state: "error" });
     });
+    void refreshCandidates();
 
     const unlistenPromise = listen<CodexEvent>("codex-event", (event) => {
       const next = event.payload;
       pushEvent(next);
       const nextState = normalizeEventState(next);
 
-      if (nextState) {
+      if (nextState && !isDragging()) {
         setCurrentState(nextState);
       }
 
-      if (nextState === "thinking" || nextState === "working" || nextState === "running_command" || nextState === "editing_file") {
+      if (
+        nextState === "thinking" ||
+        nextState === "working" ||
+        nextState === "running_command" ||
+        nextState === "editing_file"
+      ) {
         setRunning(true);
       }
 
@@ -145,6 +179,17 @@ function App() {
       clearIdleTimer();
     };
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(petSizeKey, String(petSize));
+    void resizeWindow(settingsOpen, petSize).catch((error) => {
+      pushEvent({ kind: "window.resize.error", message: String(error), state: "error" });
+    });
+  }, [petSize, settingsOpen]);
+
+  useEffect(() => {
+    localStorage.setItem(renderModeKey, renderMode);
+  }, [renderMode]);
 
   useEffect(() => {
     if (packagePath) {
@@ -218,6 +263,7 @@ function App() {
     }
 
     setRunning(true);
+    setSettingsOpen(false);
     setCurrentState("thinking");
     pushEvent({ kind: "queued", message: "任务已发送", state: "thinking" });
 
@@ -249,32 +295,124 @@ function App() {
   function scheduleIdle() {
     clearIdleTimer();
     idleTimerRef.current = window.setTimeout(() => {
-      setCurrentState("idle");
+      if (!isDragging()) {
+        setCurrentState("idle");
+      }
       idleTimerRef.current = null;
     }, 2600);
   }
 
-  async function startWindowDrag(event: MouseEvent<HTMLElement>) {
-    const target = event.target as HTMLElement;
-    const wantsDrag = Boolean(target.closest(".drag-handle"));
-    if (!wantsDrag && target.closest("button,input,textarea,.no-drag")) {
+  function isDragging() {
+    return dragRef.current !== null;
+  }
+
+  async function startPetDrag(event: PointerEvent<HTMLElement>) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest(".settings-popover")) {
       return;
     }
 
-    if (isTauriRuntime) {
-      event.preventDefault();
+    event.preventDefault();
+    setSettingsOpen(false);
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+
+    if (!isTauriRuntime) {
       setCurrentState("dragging");
-      await getCurrentWindow().startDragging();
+      return;
+    }
+
+    try {
+      const appWindow = getCurrentWindow();
+      const position = await appWindow.outerPosition();
+      const scaleFactor = await appWindow.scaleFactor();
+
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startScreenX: event.screenX,
+        startScreenY: event.screenY,
+        lastScreenX: event.screenX,
+        startWindowX: position.x,
+        startWindowY: position.y,
+        scaleFactor,
+        previousState: currentState,
+        latestState: "dragging",
+        pendingFrame: null,
+      };
+      setCurrentState("dragging");
+    } catch (error) {
+      try {
+        (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture may already be released by the OS.
+      }
+      setCurrentState("error");
+      pushEvent({ kind: "window.drag.error", message: String(error), state: "error" });
+      scheduleIdle();
     }
   }
 
-  async function toggleCompact() {
-    const next = !compact;
-    setCompact(next);
-    if (isTauriRuntime) {
-      const size = next ? new LogicalSize(236, 282) : new LogicalSize(380, 540);
-      await getCurrentWindow().setSize(size);
+  function movePet(event: PointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !isTauriRuntime) {
+      return;
     }
+
+    const deltaX = event.screenX - drag.startScreenX;
+    const deltaY = event.screenY - drag.startScreenY;
+    const movementX = event.screenX - drag.lastScreenX;
+    const pointerId = event.pointerId;
+    const directionState: PetState =
+      movementX < -1 ? "dragging_left" : movementX > 1 ? "dragging_right" : drag.latestState;
+    drag.lastScreenX = event.screenX;
+    if (drag.latestState !== directionState) {
+      drag.latestState = directionState;
+      setCurrentState(directionState);
+    }
+
+    if (drag.pendingFrame !== null) {
+      window.cancelAnimationFrame(drag.pendingFrame);
+    }
+
+    drag.pendingFrame = window.requestAnimationFrame(() => {
+      const currentDrag = dragRef.current;
+      if (!currentDrag || currentDrag.pointerId !== pointerId) {
+        return;
+      }
+
+      currentDrag.pendingFrame = null;
+      void getCurrentWindow().setPosition(
+        new PhysicalPosition(
+          Math.round(currentDrag.startWindowX + deltaX * currentDrag.scaleFactor),
+          Math.round(currentDrag.startWindowY + deltaY * currentDrag.scaleFactor),
+        ),
+      );
+    });
+  }
+
+  function endPetDrag(event: PointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    dragRef.current = null;
+    if (drag.pendingFrame !== null) {
+      window.cancelAnimationFrame(drag.pendingFrame);
+    }
+    try {
+      (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be released by the OS.
+    }
+    setCurrentState(running ? "working" : drag.previousState === "idle" ? "idle" : drag.previousState);
+  }
+
+  function openSettings(event: MouseEvent<HTMLElement>) {
+    event.preventDefault();
+    setSettingsOpen(true);
+  }
+
+  function closeSettings() {
+    setSettingsOpen(false);
   }
 
   async function minimizeWindow() {
@@ -297,123 +435,157 @@ function App() {
   }
 
   return (
-    <main className={`pet-shell ${compact ? "is-compact" : ""}`} onMouseDown={startWindowDrag}>
-      <section className={`pet-stage state-${currentState}`} aria-label="桌宠">
-        <div className="window-controls no-drag">
-          <button className="icon-button drag-handle" type="button" title="拖动窗口" onMouseDown={startWindowDrag}>
-            <Grip size={16} />
-          </button>
-          <button className="icon-button" type="button" title={compact ? "展开" : "缩小"} onClick={toggleCompact}>
-            {compact ? <Maximize2 size={15} /> : <Shrink size={15} />}
-          </button>
-          <button className="icon-button" type="button" title="最小化" onClick={minimizeWindow}>
-            <Minimize2 size={15} />
-          </button>
-          <button className="icon-button danger" type="button" title="关闭" onClick={closeWindow}>
-            <X size={15} />
-          </button>
-        </div>
-
-        <PetVisualView visual={visual} state={currentState} />
-
-        <div className="status-pill">
-          {running ? <LoaderCircle size={14} /> : <CheckCircle2 size={14} />}
-          <span>{statusLabel}</span>
-        </div>
+    <main className={`pet-shell ${settingsOpen ? "has-settings" : ""}`} style={shellStyle}>
+      <section
+        className={`pet-stage state-${currentState} render-${renderMode}`}
+        aria-label="桌宠"
+        onPointerDown={startPetDrag}
+        onPointerMove={movePet}
+        onPointerUp={endPetDrag}
+        onPointerCancel={endPetDrag}
+        onContextMenu={openSettings}
+      >
+        <PetVisualView visual={visual} state={currentState} renderMode={renderMode} petSize={petSize} />
       </section>
 
-      <section className="control-panel no-drag">
-        <header className="panel-header">
-          <div>
-            <span className="eyebrow">Codex Pet</span>
-            <h1>{headline}</h1>
-          </div>
-          <button
-            className="icon-button"
-            type="button"
-            title="刷新本地宠物"
-            onClick={refreshCandidates}
-          >
-            <RefreshCw size={17} />
-          </button>
-        </header>
-
-        <p className="latest-message">{latestMessage}</p>
-
-        <label className="field">
-          <span>动画包 / 图片路径</span>
-          <div className="path-row">
-            <input
-              value={packagePath}
-              onChange={(event) => setPackagePath(event.currentTarget.value)}
-              placeholder={"D:\\A_STUDY\\codex-pet\\pet-assets\\my-pet.zip"}
-            />
-            <button className="icon-button" type="button" title="导入动画包" onClick={importPackage}>
-              <Import size={16} />
-            </button>
-          </div>
-        </label>
-
-        {candidates.length > 0 && (
-          <div className="candidate-row" aria-label="宠物候选列表">
-            {candidates.slice(0, 4).map((candidate) => (
-              <button
-                key={candidate.path}
-                className="candidate-button"
-                type="button"
-                title={candidate.path}
-                onClick={() => selectCandidate(candidate)}
-              >
-                {candidate.name}
-                <span>{candidate.kind}</span>
+      {settingsOpen && (
+        <section className="settings-popover" role="dialog" aria-label="桌宠设置" onContextMenu={(event) => event.preventDefault()}>
+          <header className="settings-header">
+            <div>
+              <span className="eyebrow">Codex Pet</span>
+              <h1>设置</h1>
+            </div>
+            <div className="settings-actions">
+              <button className="icon-button" type="button" title="刷新宠物" onClick={refreshCandidates}>
+                <RefreshCw size={16} />
               </button>
-            ))}
+              <button className="icon-button" type="button" title="最小化" onClick={minimizeWindow}>
+                <Minus size={16} />
+              </button>
+              <button className="icon-button danger" type="button" title="关闭程序" onClick={closeWindow}>
+                <X size={16} />
+              </button>
+              <button className="icon-button" type="button" title="关闭设置" onClick={closeSettings}>
+                <Settings size={16} />
+              </button>
+            </div>
+          </header>
+
+          <div className="status-line" aria-live="polite">
+            <span>{statusLabel}</span>
+            <p>{latestMessage}</p>
           </div>
-        )}
 
-        <form className="task-form" onSubmit={submitTask}>
           <label className="field">
-            <span>工作目录</span>
-            <input
-              value={workdir}
-              onChange={(event) => setWorkdir(event.currentTarget.value)}
-              placeholder="留空则使用当前目录"
-            />
+            <span>主题</span>
+            <select
+              value={activePet?.path ?? ""}
+              onChange={(event) => {
+                const candidate = candidates.find((item) => item.path === event.currentTarget.value);
+                if (candidate) {
+                  selectCandidate(candidate);
+                }
+              }}
+            >
+              <option value="">默认</option>
+              {candidates.map((candidate) => (
+                <option key={candidate.path} value={candidate.path}>
+                  {candidate.name}
+                </option>
+              ))}
+            </select>
           </label>
 
           <label className="field">
-            <span>任务</span>
-            <textarea
-              value={task}
-              rows={3}
-              onChange={(event) => setTask(event.currentTarget.value)}
-              placeholder="让 Codex 检查这个项目并总结下一步"
-            />
+            <span>动画包 / 图片路径</span>
+            <div className="path-row">
+              <input
+                value={packagePath}
+                onChange={(event) => setPackagePath(event.currentTarget.value)}
+                placeholder={"D:\\A_STUDY\\codex-pet\\pet-assets\\my-pet.zip"}
+              />
+              <button className="icon-button" type="button" title="导入动画包" onClick={importPackage}>
+                <Import size={16} />
+              </button>
+            </div>
           </label>
 
-          <button className="run-button" type="submit" disabled={running || !task.trim()}>
-            {running ? <LoaderCircle size={18} /> : <Play size={18} />}
-            <span>{running ? "处理中" : "发送给 Codex"}</span>
-          </button>
-        </form>
+          <div className="split-row">
+            <label className="field">
+              <span>大小</span>
+              <input
+                type="range"
+                min="150"
+                max="330"
+                step="5"
+                value={petSize}
+                onChange={(event) => setPetSize(clampPetSize(Number(event.currentTarget.value)))}
+              />
+            </label>
 
-        <div className="event-log" aria-label="Codex 状态日志">
-          <Sparkles size={15} />
-          <ul>
-            {events.slice(-3).map((event, index) => (
-              <li key={`${event.kind}-${index}`}>
-                {event.sessionId ? `${shortSession(event.sessionId)} · ` : ""}
-                {event.message}
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
+            <label className="field">
+              <span>渲染</span>
+              <select value={renderMode} onChange={(event) => setRenderMode(event.currentTarget.value as RenderMode)}>
+                <option value="smooth">平滑</option>
+                <option value="pixelated">像素</option>
+              </select>
+            </label>
+          </div>
+
+          <form className="task-form" onSubmit={submitTask}>
+            <label className="field">
+              <span>工作目录</span>
+              <input
+                value={workdir}
+                onChange={(event) => setWorkdir(event.currentTarget.value)}
+                placeholder="留空则使用当前目录"
+              />
+            </label>
+
+            <label className="field">
+              <span>任务</span>
+              <textarea
+                value={task}
+                rows={3}
+                onChange={(event) => setTask(event.currentTarget.value)}
+                placeholder="让 Codex 检查这个项目并总结下一步"
+              />
+            </label>
+
+            <button className="run-button" type="submit" disabled={running || !task.trim()}>
+              {running ? <LoaderCircle size={18} /> : <Play size={18} />}
+              <span>{running ? "处理中" : "发送给 Codex"}</span>
+            </button>
+          </form>
+
+          <div className="event-log" aria-label="Codex 状态日志">
+            <Sparkles size={15} />
+            <ul>
+              {events.slice(-3).map((event, index) => (
+                <li key={`${event.kind}-${index}`}>
+                  {event.sessionId ? `${shortSession(event.sessionId)} · ` : ""}
+                  {event.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      )}
     </main>
   );
 }
 
-function PetVisualView({ visual, state }: { visual: PetVisual | null; state: PetState }) {
+function PetVisualView({
+  visual,
+  state,
+  renderMode,
+  petSize,
+}: {
+  visual: PetVisual | null;
+  state: PetState;
+  renderMode: RenderMode;
+  petSize: number;
+}) {
   if (!visual) {
     return <img className="pet-image" src={defaultPet} alt="Codex Pet" draggable={false} />;
   }
@@ -424,10 +596,12 @@ function PetVisualView({ visual, state }: { visual: PetVisual | null; state: Pet
     const frames = Math.max(1, visual.frames ?? 1);
     const row = visual.row ?? 0;
     const totalMs = Math.max(1, visual.totalMs ?? 1000);
+    const atlasScale = petSize / Math.max(frameWidth, frameHeight);
     const style = {
       "--atlas-url": `url("${convertFileSrc(visual.path)}")`,
       "--frame-width": `${frameWidth}px`,
       "--frame-height": `${frameHeight}px`,
+      "--atlas-scale": String(Math.max(0.1, Math.min(4, atlasScale))),
       "--atlas-width": `${frameWidth * 8}px`,
       "--atlas-height": `${frameHeight * 9}px`,
       "--atlas-frames": frames,
@@ -437,7 +611,7 @@ function PetVisualView({ visual, state }: { visual: PetVisual | null; state: Pet
     } as CSSProperties;
 
     return (
-      <div className="pet-atlas-wrap" style={style} aria-label={`宠物状态 ${state}`}>
+      <div className={`pet-atlas-wrap render-${renderMode}`} style={style} aria-label={`宠物状态 ${state}`}>
         <div className="pet-atlas" />
       </div>
     );
@@ -446,7 +620,7 @@ function PetVisualView({ visual, state }: { visual: PetVisual | null; state: Pet
   return (
     <img
       key={`${visual.path}-${state}`}
-      className="pet-image"
+      className={`pet-image render-${renderMode}`}
       src={isTauriRuntime ? convertFileSrc(visual.path) : defaultPet}
       alt={`宠物状态 ${state}`}
       draggable={false}
@@ -455,13 +629,33 @@ function PetVisualView({ visual, state }: { visual: PetVisual | null; state: Pet
 }
 
 function resolveVisual(pet: PetCandidate, state: PetState): PetVisual | null {
-  return (
-    pet.states[state] ??
-    pet.states.working ??
-    pet.states.thinking ??
-    pet.states.idle ??
-    null
-  );
+  if (state === "idle") {
+    return pet.states.idle ?? null;
+  }
+
+  const fallbackByState: Partial<Record<PetState, string[]>> = {
+    dragging_left: ["dragging_left", "dragging", "working", "idle"],
+    dragging_right: ["dragging_right", "dragging", "working", "idle"],
+    dragging: ["dragging", "working", "idle"],
+    success: ["success", "attention", "idle"],
+    error: ["error", "idle"],
+    waiting_input: ["waiting_input", "notification", "thinking", "idle"],
+    running_command: ["running_command", "working", "thinking", "idle"],
+    editing_file: ["editing_file", "working", "thinking", "idle"],
+    sweeping: ["sweeping", "working", "idle"],
+    carrying: ["carrying", "working", "idle"],
+    working: ["working", "thinking", "idle"],
+    thinking: ["thinking", "idle"],
+  };
+
+  for (const key of fallbackByState[state] ?? [state, "idle"]) {
+    const visual = pet.states[key];
+    if (visual) {
+      return visual;
+    }
+  }
+
+  return null;
 }
 
 function normalizeEventState(event: CodexEvent): PetState | null {
@@ -494,6 +688,33 @@ function normalizeEventState(event: CodexEvent): PetState | null {
     default:
       return null;
   }
+}
+
+async function resizeWindow(settingsOpen: boolean, petSize: number) {
+  if (!isTauriRuntime) {
+    return;
+  }
+
+  const size = settingsOpen
+    ? new LogicalSize(settingsWidth, settingsHeight)
+    : new LogicalSize(petSize + windowPadding, petSize + windowPadding);
+
+  await getCurrentWindow().setSize(size);
+}
+
+function clampPetSize(value: number) {
+  if (!Number.isFinite(value)) {
+    return defaultPetSize;
+  }
+  return Math.max(150, Math.min(330, value));
+}
+
+function readPetSize() {
+  return clampPetSize(Number(localStorage.getItem(petSizeKey)));
+}
+
+function readRenderMode(): RenderMode {
+  return localStorage.getItem(renderModeKey) === "pixelated" ? "pixelated" : "smooth";
 }
 
 function shortSession(sessionId: string) {

@@ -11,7 +11,8 @@
 - 自动扫描 `~/.codex/pets`、`~/.codex`、当前项目 `pet-assets`
 - 点击发送任务后，由 Rust 后端受控启动 `codex exec --json`
 - 轮询 `~/.codex/sessions`，把 Codex JSONL session 状态映射成桌宠动画
-- 桌宠窗口支持拖动、缩小/展开、最小化、关闭
+- 左键拖动桌宠，右键打开设置弹窗
+- 设置弹窗支持切换主题、导入资源、调整大小、切换渲染质量、最小化和关闭
 
 ## 目录
 
@@ -38,6 +39,16 @@ pnpm tauri dev
 
 ```bash
 pnpm build
+```
+
+## 桌宠操作
+
+```text
+左键按住人物拖动    移动桌宠位置，拖动方向会切换左右奔跑动作
+右键人物            打开设置弹窗
+设置 > 主题         切换已扫描到的本地宠物主题
+设置 > 大小         调整人物显示大小
+设置 > 渲染         在平滑 / 像素渲染之间切换
 ```
 
 ## 使用本地宠物和动画包
@@ -109,6 +120,8 @@ waiting_input
 success
 error
 dragging
+dragging_left
+dragging_right
 sweeping
 carrying
 ```
@@ -126,6 +139,8 @@ waiting_input     -> waiting row
 success           -> jumping row
 error             -> failed row
 dragging          -> running row
+dragging_left     -> running-left row
+dragging_right    -> running-right row
 ```
 
 ## Codex CLI
