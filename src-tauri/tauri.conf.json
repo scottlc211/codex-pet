@@ -35,8 +35,8 @@
           "$HOME/.codex/**",
           "$APPDATA/Codex/**",
           "$APPDATA/codex/**",
-          "D:\\A_STUDY\\pets\\pet-assets\\**",
-          "/mnt/d/A_STUDY/pets/pet-assets/**"
+          "D:\\A_STUDY\\codex-pet\\pet-assets\\**",
+          "/mnt/d/A_STUDY/codex-pet/pet-assets/**"
         ]
       }
     }

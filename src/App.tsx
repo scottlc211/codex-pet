@@ -190,7 +190,7 @@ function App() {
           <input
             value={petPath}
             onChange={(event) => setPetPath(event.currentTarget.value)}
-            placeholder={"D:\\A_STUDY\\pets\\pet-assets\\pet.webp"}
+            placeholder={"D:\\A_STUDY\\codex-pet\\pet-assets\\pet.webp"}
           />
         </label>
 

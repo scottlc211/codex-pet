@@ -42,13 +42,13 @@ pnpm build
 推荐把资源放到：
 
 ```text
-D:\A_STUDY\pets\pet-assets\
+D:\A_STUDY\codex-pet\pet-assets\
 ```
 
 在 WSL/Linux 环境中，对应路径通常是：
 
 ```text
-/mnt/d/A_STUDY/pets/pet-assets/
+/mnt/d/A_STUDY/codex-pet/pet-assets/
 ```
 
 桌宠也允许直接输入宠物文件路径。若路径不在允许范围内，需要更新 `src-tauri/tauri.conf.json` 的 `assetProtocol.scope`。
