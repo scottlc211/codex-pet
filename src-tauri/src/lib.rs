@@ -429,7 +429,17 @@ fn resolve_configured_codex_executable(value: &str) -> Result<PathBuf, String> {
             .ok_or_else(|| format!("未找到配置的 Codex 命令：{value}"));
     }
 
-    let path = clean_user_path(value);
+    let mut path = clean_user_path(value);
+    #[cfg(target_os = "windows")]
+    {
+        if path.extension().is_none() {
+            if let Some(with_cmd) = sibling_with_extension(&path, "cmd") {
+                path = with_cmd;
+            } else if let Some(with_exe) = sibling_with_extension(&path, "exe") {
+                path = with_exe;
+            }
+        }
+    }
     if !path.exists() {
         return Err(format!("配置的 Codex 路径不存在：{}", path.display()));
     }
@@ -511,13 +521,19 @@ fn auto_detect_codex_executable() -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn auto_detect_named_executable(command: &str) -> Option<PathBuf> {
-    find_windows_executable(command).or_else(|| {
-        let with_cmd = format!("{command}.cmd");
-        find_windows_executable(&with_cmd)
-    }).or_else(|| {
+    let with_cmd = format!("{command}.cmd");
+    find_windows_executable(&with_cmd).or_else(|| {
         let with_exe = format!("{command}.exe");
         find_windows_executable(&with_exe)
+    }).or_else(|| {
+        find_windows_executable(command)
     })
+}
+
+#[cfg(target_os = "windows")]
+fn sibling_with_extension(path: &Path, extension: &str) -> Option<PathBuf> {
+    let candidate = path.with_extension(extension);
+    candidate.is_file().then_some(candidate)
 }
 
 #[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]

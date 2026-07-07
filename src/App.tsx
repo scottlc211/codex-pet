@@ -474,31 +474,7 @@ function App() {
           await setIgnoreCursorEvents(false);
           await setWindowLayer(true, false);
         } else if (settingsOpen) {
-          const [cursor, position, scaleFactor] = await Promise.all([
-            cursorPosition(),
-            appWindow.outerPosition(),
-            appWindow.scaleFactor(),
-          ]);
-          const modal = document.querySelector<HTMLElement>(".settings-modal");
-          const petStage = document.querySelector<HTMLElement>(".pet-stage");
-          const relativeX = (cursor.x - position.x) / scaleFactor;
-          const relativeY = (cursor.y - position.y) / scaleFactor;
-          const modalRect = modal?.getBoundingClientRect();
-          const petRect = petStage?.getBoundingClientRect();
-          const insideModal =
-            modalRect !== undefined &&
-            relativeX >= modalRect.left &&
-            relativeX <= modalRect.right &&
-            relativeY >= modalRect.top &&
-            relativeY <= modalRect.bottom;
-          const insidePet =
-            petRect !== undefined &&
-            relativeX >= petRect.left &&
-            relativeX <= petRect.right &&
-            relativeY >= petRect.top &&
-            relativeY <= petRect.bottom;
-          const insideAppControl = insideModal || insidePet;
-          await setIgnoreCursorEvents(!insideAppControl);
+          await setIgnoreCursorEvents(false);
           await setWindowLayer(false, !windowFocused);
         } else if (contextMenuOpen) {
           await setIgnoreCursorEvents(false);
