@@ -1014,12 +1014,9 @@ fn open_terminal_at(cwd: &Path, terminal: Option<&str>) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn open_windows_terminal(terminal_id: &str, cwd: &Path) -> Result<(), String> {
-    let cwd_text = cwd.to_string_lossy().to_string();
+    let cwd_text = terminal_path_text(cwd);
     match terminal_id {
-        "warp" => {
-            find_warp().ok_or_else(|| "未找到 Warp".to_string())?;
-            open_warp_terminal(cwd)
-        }
+        "warp" => open_warp_terminal(cwd),
         "windows-terminal" => {
             ensure_windows_command("wt.exe")?;
             spawn_windows_start("wt", &["-d".to_string(), cwd_text])
@@ -1036,14 +1033,14 @@ fn open_windows_terminal(terminal_id: &str, cwd: &Path) -> Result<(), String> {
             ensure_windows_command("cmd.exe")?;
             spawn_windows_start(
                 "cmd",
-                &["/K".to_string(), format!("cd /d \"{}\"", cwd.display())],
+                &["/K".to_string(), format!("cd /d \"{cwd_text}\"")],
             )
         }
         "git-bash" => {
             let executable = find_git_bash().ok_or_else(|| "未找到 Git Bash".to_string())?;
             spawn_windows_start(
                 &executable.to_string_lossy(),
-                &[format!("--cd={}", cwd.display())],
+                &[format!("--cd={cwd_text}")],
             )
         }
         _ => Err("未知终端类型".to_string()),
@@ -1074,7 +1071,7 @@ fn open_warp_terminal(cwd: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn powershell_location_args(cwd: &Path) -> Vec<String> {
-    let escaped = cwd.to_string_lossy().replace('\'', "''");
+    let escaped = terminal_path_text(cwd).replace('\'', "''");
     vec![
         "-NoExit".to_string(),
         "-Command".to_string(),
@@ -1156,9 +1153,7 @@ fn open_warp_terminal(cwd: &Path) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn available_terminal_options() -> Vec<TerminalOption> {
     let mut terminals = vec![terminal_option("auto", "自动选择")];
-    if find_warp().is_some() {
-        terminals.push(terminal_option("warp", "Warp"));
-    }
+    terminals.push(terminal_option("warp", "Warp"));
     if windows_command_exists("wt.exe") {
         terminals.push(terminal_option("windows-terminal", "Windows Terminal"));
     }
@@ -1212,11 +1207,35 @@ fn terminal_option(id: &str, label: &str) -> TerminalOption {
 }
 
 fn warp_new_window_uri(cwd: &Path) -> String {
-    let cwd_text = cwd.to_string_lossy();
     format!(
         "warp://action/new_window?path={}",
-        percent_encode_uri_component(cwd_text.as_ref())
+        percent_encode_uri_component(&terminal_path_text(cwd))
     )
+}
+
+#[cfg(target_os = "windows")]
+fn terminal_path_text(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    strip_windows_verbatim_prefix(text.as_ref())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminal_path_text(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn strip_windows_verbatim_prefix(path: &str) -> String {
+    const UNC_PREFIX: &str = "\\\\?\\UNC\\";
+    const VERBATIM_PREFIX: &str = "\\\\?\\";
+
+    if let Some(rest) = path.strip_prefix(UNC_PREFIX) {
+        format!("\\\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(VERBATIM_PREFIX) {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 fn percent_encode_uri_component(value: &str) -> String {
@@ -1274,29 +1293,6 @@ fn find_git_bash() -> Option<PathBuf> {
         }
         if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
             candidates.push(PathBuf::from(program_files_x86).join("Git").join("git-bash.exe"));
-        }
-        candidates.into_iter().find(|path| path.is_file())
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn find_warp() -> Option<PathBuf> {
-    find_windows_executable("warp.exe").or_else(|| {
-        let mut candidates = Vec::new();
-        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
-            let root = PathBuf::from(local_app_data).join("Programs").join("Warp");
-            candidates.push(root.join("warp.exe"));
-            candidates.push(root.join("Warp.exe"));
-        }
-        if let Some(program_files) = env::var_os("ProgramFiles") {
-            let root = PathBuf::from(program_files).join("Warp");
-            candidates.push(root.join("warp.exe"));
-            candidates.push(root.join("Warp.exe"));
-        }
-        if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
-            let root = PathBuf::from(program_files_x86).join("Warp");
-            candidates.push(root.join("warp.exe"));
-            candidates.push(root.join("Warp.exe"));
         }
         candidates.into_iter().find(|path| path.is_file())
     })
