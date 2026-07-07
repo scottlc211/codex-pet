@@ -177,6 +177,7 @@ function App() {
   const dragRef = useRef<DragSession | null>(null);
   const modalDragRef = useRef<ModalDragSession | null>(null);
   const settingsReturnPositionRef = useRef<PhysicalPosition | null>(null);
+  const windowAlwaysOnTopRef = useRef(true);
 
   const visual = useMemo(() => {
     if (!activePet) {
@@ -293,6 +294,8 @@ function App() {
     const appWindow = getCurrentWindow();
     let disposed = false;
     let ignoringCursor = false;
+    let windowFocused = true;
+    let layerErrorReported = false;
     let timer: number | null = null;
 
     async function setIgnoreCursorEvents(next: boolean) {
@@ -303,6 +306,22 @@ function App() {
       await appWindow.setIgnoreCursorEvents(next);
     }
 
+    async function setWindowAlwaysOnTop(next: boolean) {
+      if (windowAlwaysOnTopRef.current === next) {
+        return;
+      }
+
+      try {
+        await appWindow.setAlwaysOnTop(next);
+        windowAlwaysOnTopRef.current = next;
+      } catch (error) {
+        if (!layerErrorReported) {
+          layerErrorReported = true;
+          pushEvent({ kind: "window.layer.error", message: String(error), state: "error" });
+        }
+      }
+    }
+
     async function updateCursorHitArea() {
       if (disposed) {
         return;
@@ -311,6 +330,7 @@ function App() {
       try {
         if (isDragging() || modalDragRef.current) {
           await setIgnoreCursorEvents(false);
+          await setWindowAlwaysOnTop(true);
         } else if (settingsOpen) {
           const [cursor, position, scaleFactor] = await Promise.all([
             cursorPosition(),
@@ -318,18 +338,31 @@ function App() {
             appWindow.scaleFactor(),
           ]);
           const modal = document.querySelector<HTMLElement>(".settings-modal");
+          const petStage = document.querySelector<HTMLElement>(".pet-stage");
           const relativeX = (cursor.x - position.x) / scaleFactor;
           const relativeY = (cursor.y - position.y) / scaleFactor;
           const modalRect = modal?.getBoundingClientRect();
+          const petRect = petStage?.getBoundingClientRect();
           const insideModal =
             modalRect !== undefined &&
             relativeX >= modalRect.left &&
             relativeX <= modalRect.right &&
             relativeY >= modalRect.top &&
             relativeY <= modalRect.bottom;
-          await setIgnoreCursorEvents(!insideModal);
+          const insidePet =
+            petRect !== undefined &&
+            relativeX >= petRect.left &&
+            relativeX <= petRect.right &&
+            relativeY >= petRect.top &&
+            relativeY <= petRect.bottom;
+          const insideAppControl = insideModal || insidePet;
+          await setIgnoreCursorEvents(!insideAppControl);
+          if (windowFocused && insideAppControl) {
+            await setWindowAlwaysOnTop(true);
+          }
         } else if (contextMenuOpen) {
           await setIgnoreCursorEvents(false);
+          await setWindowAlwaysOnTop(true);
         } else {
           const [cursor, position, size] = await Promise.all([
             cursorPosition(),
@@ -354,6 +387,7 @@ function App() {
             cursor.y >= position.y + hitTop &&
             cursor.y <= position.y + hitTop + hitHeight;
           await setIgnoreCursorEvents(!insideHotArea);
+          await setWindowAlwaysOnTop(true);
         }
       } catch {
         await setIgnoreCursorEvents(false).catch(() => undefined);
@@ -365,12 +399,25 @@ function App() {
     }
 
     void updateCursorHitArea();
+    const unlistenFocusPromise = appWindow.onFocusChanged(({ payload: focused }) => {
+      windowFocused = focused;
+      if (settingsOpen) {
+        void setWindowAlwaysOnTop(focused);
+      } else if (focused) {
+        void setWindowAlwaysOnTop(true);
+      }
+    });
+
     return () => {
       disposed = true;
       if (timer !== null) {
         window.clearTimeout(timer);
       }
+      void unlistenFocusPromise.then((unlisten) => unlisten());
       void appWindow.setIgnoreCursorEvents(false).catch(() => undefined);
+      void appWindow.setAlwaysOnTop(true).then(() => {
+        windowAlwaysOnTopRef.current = true;
+      }).catch(() => undefined);
     };
   }, [settingsOpen, contextMenuOpen, petSize, petOffsetX, petOffsetY]);
 
