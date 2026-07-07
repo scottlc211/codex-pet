@@ -116,17 +116,20 @@ type TerminalOption = {
 const packagePathKey = "codex-pet:package-path";
 const workdirKey = "codex-pet:workdir";
 const petSizeKey = "codex-pet:pet-size";
+const petOffsetXKey = "codex-pet:pet-offset-x";
+const petOffsetYKey = "codex-pet:pet-offset-y";
 const renderModeKey = "codex-pet:render-mode";
 const terminalKey = "codex-pet:terminal";
 const defaultPetSize = 236;
-const settingsWidth = 980;
-const settingsHeight = 640;
+const settingsWidth = 760;
+const settingsHeight = 520;
 const themePreviewPetSize = 112;
 const themePreviewCanvasSize = 156;
 const petCanvasPadding = 48;
 const windowPadding = petCanvasPadding + 24;
-const petVisualOffsetX = -24;
-const petVisualOffsetY = -28;
+const defaultPetVisualOffsetX = -24;
+const defaultPetVisualOffsetY = -28;
+const petVisualOffsetLimit = 36;
 const petHitWidthRatio = 0.82;
 const petHitHeightRatio = 0.92;
 const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
@@ -153,6 +156,8 @@ function App() {
   const [packagePath, setPackagePath] = useState(() => localStorage.getItem(packagePathKey) ?? "");
   const [workdir, setWorkdir] = useState(() => localStorage.getItem(workdirKey) ?? "");
   const [petSize, setPetSize] = useState(() => readPetSize());
+  const [petOffsetX, setPetOffsetX] = useState(() => readPetOffset(petOffsetXKey, defaultPetVisualOffsetX));
+  const [petOffsetY, setPetOffsetY] = useState(() => readPetOffset(petOffsetYKey, defaultPetVisualOffsetY));
   const [renderMode, setRenderMode] = useState<RenderMode>(() => readRenderMode());
   const [terminalId, setTerminalId] = useState(() => localStorage.getItem(terminalKey) ?? autoTerminal.id);
   const [terminals, setTerminals] = useState<TerminalOption[]>([autoTerminal]);
@@ -189,8 +194,8 @@ function App() {
   const shellStyle = {
     "--pet-size": `${petSize}px`,
     "--pet-canvas-size": `${petSize + petCanvasPadding}px`,
-    "--pet-visual-offset-x": `${petVisualOffsetX}px`,
-    "--pet-visual-offset-y": `${petVisualOffsetY}px`,
+    "--pet-visual-offset-x": `${petOffsetX}px`,
+    "--pet-visual-offset-y": `${petOffsetY}px`,
   } as CSSProperties;
   const settingsModalStyle = settingsModalPosition
     ? ({
@@ -265,6 +270,14 @@ function App() {
   }, [petSize, settingsOpen]);
 
   useEffect(() => {
+    localStorage.setItem(petOffsetXKey, String(petOffsetX));
+  }, [petOffsetX]);
+
+  useEffect(() => {
+    localStorage.setItem(petOffsetYKey, String(petOffsetY));
+  }, [petOffsetY]);
+
+  useEffect(() => {
     localStorage.setItem(renderModeKey, renderMode);
   }, [renderMode]);
 
@@ -325,13 +338,21 @@ function App() {
           ]);
           const hitWidth = Math.min(size.width, Math.max(24, Math.round(petSize * petHitWidthRatio)));
           const hitHeight = Math.min(size.height, Math.max(24, Math.round(petSize * petHitHeightRatio)));
-          const insetX = Math.max(0, Math.round((size.width - hitWidth) / 2));
-          const insetY = Math.max(0, Math.round((size.height - hitHeight) / 2));
+          const hitLeft = clamp(
+            Math.round((size.width - hitWidth) / 2 + petOffsetX),
+            0,
+            Math.max(0, size.width - hitWidth),
+          );
+          const hitTop = clamp(
+            Math.round((size.height - hitHeight) / 2 + petOffsetY),
+            0,
+            Math.max(0, size.height - hitHeight),
+          );
           const insideHotArea =
-            cursor.x >= position.x + insetX &&
-            cursor.x <= position.x + size.width - insetX &&
-            cursor.y >= position.y + insetY &&
-            cursor.y <= position.y + size.height - insetY;
+            cursor.x >= position.x + hitLeft &&
+            cursor.x <= position.x + hitLeft + hitWidth &&
+            cursor.y >= position.y + hitTop &&
+            cursor.y <= position.y + hitTop + hitHeight;
           await setIgnoreCursorEvents(!insideHotArea);
         }
       } catch {
@@ -351,7 +372,7 @@ function App() {
       }
       void appWindow.setIgnoreCursorEvents(false).catch(() => undefined);
     };
-  }, [settingsOpen, contextMenuOpen, petSize]);
+  }, [settingsOpen, contextMenuOpen, petSize, petOffsetX, petOffsetY]);
 
   useEffect(() => {
     if (packagePath) {
@@ -870,6 +891,37 @@ function App() {
                     <output>{petSize}px</output>
                   </div>
                 </label>
+                <div className="field">
+                  <span>显示偏移</span>
+                  <div className="offset-row">
+                    <label className="offset-control">
+                      <span aria-hidden="true">X</span>
+                      <input
+                        aria-label="显示偏移 X"
+                        type="range"
+                        min={-petVisualOffsetLimit}
+                        max={petVisualOffsetLimit}
+                        step="1"
+                        value={petOffsetX}
+                        onChange={(event) => setPetOffsetX(clampPetOffset(Number(event.currentTarget.value)))}
+                      />
+                      <output>{petOffsetX}px</output>
+                    </label>
+                    <label className="offset-control">
+                      <span aria-hidden="true">Y</span>
+                      <input
+                        aria-label="显示偏移 Y"
+                        type="range"
+                        min={-petVisualOffsetLimit}
+                        max={petVisualOffsetLimit}
+                        step="1"
+                        value={petOffsetY}
+                        onChange={(event) => setPetOffsetY(clampPetOffset(Number(event.currentTarget.value)))}
+                      />
+                      <output>{petOffsetY}px</output>
+                    </label>
+                  </div>
+                </div>
                 <label className="field">
                   <span>渲染方式</span>
                   <select value={renderMode} onChange={(event) => setRenderMode(event.currentTarget.value as RenderMode)}>
@@ -1157,19 +1209,8 @@ async function resizeWindow(settingsOpen: boolean, petSize: number, returnPositi
 
   const appWindow = getCurrentWindow();
   if (settingsOpen) {
-    const monitor = await currentMonitor().then((value) => value ?? primaryMonitor());
-    if (monitor) {
-      await appWindow.setPosition(monitor.position);
-      await appWindow.setSize(
-        new LogicalSize(
-          monitor.size.width / monitor.scaleFactor,
-          monitor.size.height / monitor.scaleFactor,
-        ),
-      );
-    } else {
-      await appWindow.setSize(new LogicalSize(settingsWidth, settingsHeight));
-      await appWindow.center();
-    }
+    await appWindow.setSize(new LogicalSize(settingsWidth, settingsHeight));
+    await appWindow.center();
     return;
   }
 
@@ -1263,7 +1304,7 @@ function clampPetSize(value: number) {
   if (!Number.isFinite(value)) {
     return defaultPetSize;
   }
-  return clamp(value, 150, 330);
+  return clamp(Math.round(value), 150, 330);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -1272,6 +1313,25 @@ function clamp(value: number, min: number, max: number) {
 
 function readPetSize() {
   return clampPetSize(Number(localStorage.getItem(petSizeKey)));
+}
+
+function readPetOffset(key: string, fallback: number) {
+  const storedValue = localStorage.getItem(key);
+  if (storedValue === null) {
+    return fallback;
+  }
+  const value = Number(storedValue);
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return clampPetOffset(value);
+}
+
+function clampPetOffset(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return clamp(Math.round(value), -petVisualOffsetLimit, petVisualOffsetLimit);
 }
 
 function readRenderMode(): RenderMode {

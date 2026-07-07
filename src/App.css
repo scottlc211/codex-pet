@@ -53,12 +53,7 @@ button {
 }
 
 .pet-shell.has-settings .pet-stage {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  z-index: 35;
-  opacity: 1;
-  pointer-events: none;
+  display: none;
 }
 
 .pet-stage {
@@ -359,6 +354,31 @@ button {
   text-align: right;
 }
 
+.offset-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.offset-control {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 48px;
+  gap: 6px;
+  align-items: center;
+}
+
+.offset-control span {
+  text-align: center;
+}
+
+.offset-row output {
+  color: #176f68;
+  font-size: 12px;
+  font-weight: 850;
+  text-align: right;
+}
+
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -520,7 +540,7 @@ h1 {
   gap: 5px;
 }
 
-.field span {
+.field > span {
   color: #526461;
   font-size: 11px;
   font-weight: 750;

@@ -1062,7 +1062,8 @@ fn spawn_windows_start(program: &str, args: &[String]) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn open_warp_terminal(cwd: &Path) -> Result<(), String> {
-    Command::new("explorer")
+    Command::new("rundll32.exe")
+        .arg("url.dll,FileProtocolHandler")
         .arg(warp_new_window_uri(cwd))
         .spawn()
         .map(|_| ())
