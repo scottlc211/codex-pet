@@ -11,6 +11,7 @@ import {
 import { LogicalSize, PhysicalPosition, type PhysicalSize } from "@tauri-apps/api/dpi";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   currentMonitor,
   cursorPosition,
@@ -665,7 +666,11 @@ function App() {
     }
 
     try {
-      const selected = await invoke<string | null>("pick_work_path", { kind });
+      const selected = await open({
+        title: kind === "directory" ? "选择工作目录" : "选择工作文件",
+        directory: kind === "directory",
+        multiple: false,
+      });
       if (selected) {
         setWorkdir(selected);
         pushEvent({ kind: "path.selected", message: `已选择：${selected}`, state: "idle" });

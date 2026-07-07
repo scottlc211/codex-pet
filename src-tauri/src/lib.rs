@@ -251,11 +251,6 @@ fn list_terminals() -> Vec<TerminalOption> {
     available_terminal_options()
 }
 
-#[tauri::command]
-fn pick_work_path(kind: String) -> Result<Option<String>, String> {
-    pick_path(kind.trim().eq_ignore_ascii_case("file"))
-}
-
 fn emit_codex_event(
     app: &AppHandle,
     kind: &str,
@@ -1021,6 +1016,10 @@ fn open_terminal_at(cwd: &Path, terminal: Option<&str>) -> Result<(), String> {
 fn open_windows_terminal(terminal_id: &str, cwd: &Path) -> Result<(), String> {
     let cwd_text = cwd.to_string_lossy().to_string();
     match terminal_id {
+        "warp" => {
+            find_warp().ok_or_else(|| "未找到 Warp".to_string())?;
+            open_warp_terminal(cwd)
+        }
         "windows-terminal" => {
             ensure_windows_command("wt.exe")?;
             spawn_windows_start("wt", &["-d".to_string(), cwd_text])
@@ -1035,7 +1034,10 @@ fn open_windows_terminal(terminal_id: &str, cwd: &Path) -> Result<(), String> {
         }
         "cmd" => {
             ensure_windows_command("cmd.exe")?;
-            spawn_windows_start("cmd", &["/K".to_string(), format!("cd /d \"{}\"", cwd.display())])
+            spawn_windows_start(
+                "cmd",
+                &["/K".to_string(), format!("cd /d \"{}\"", cwd.display())],
+            )
         }
         "git-bash" => {
             let executable = find_git_bash().ok_or_else(|| "未找到 Git Bash".to_string())?;
@@ -1062,6 +1064,15 @@ fn spawn_windows_start(program: &str, args: &[String]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
+fn open_warp_terminal(cwd: &Path) -> Result<(), String> {
+    Command::new("explorer")
+        .arg(warp_new_window_uri(cwd))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开 Warp 失败：{error}"))
+}
+
+#[cfg(target_os = "windows")]
 fn powershell_location_args(cwd: &Path) -> Vec<String> {
     let escaped = cwd.to_string_lossy().replace('\'', "''");
     vec![
@@ -1073,6 +1084,10 @@ fn powershell_location_args(cwd: &Path) -> Vec<String> {
 
 #[cfg(target_os = "macos")]
 fn open_terminal_at(cwd: &Path, terminal: Option<&str>) -> Result<(), String> {
+    if terminal == Some("warp") {
+        return open_warp_terminal(cwd);
+    }
+
     let app = match terminal.unwrap_or("auto") {
         "auto" | "terminal" => "Terminal",
         "iterm" => "iTerm",
@@ -1086,6 +1101,15 @@ fn open_terminal_at(cwd: &Path, terminal: Option<&str>) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("打开终端失败：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn open_warp_terminal(cwd: &Path) -> Result<(), String> {
+    Command::new("open")
+        .arg(warp_new_window_uri(cwd))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开 Warp 失败：{error}"))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -1108,17 +1132,33 @@ fn open_terminal_at(cwd: &Path, terminal: Option<&str>) -> Result<(), String> {
 #[cfg(all(unix, not(target_os = "macos")))]
 fn spawn_unix_terminal(terminal_id: &str, cwd: &Path) -> Result<(), String> {
     match terminal_id {
+        "warp-terminal" => return open_warp_terminal(cwd),
         "konsole" => Command::new("konsole").arg("--workdir").arg(cwd).spawn(),
-        "xfce4-terminal" => Command::new("xfce4-terminal").arg("--working-directory").arg(cwd).spawn(),
+        "xfce4-terminal" => Command::new("xfce4-terminal")
+            .arg("--working-directory")
+            .arg(cwd)
+            .spawn(),
         terminal => Command::new(terminal).current_dir(cwd).spawn(),
     }
     .map(|_| ())
     .map_err(|error| format!("打开终端失败：{error}"))
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_warp_terminal(cwd: &Path) -> Result<(), String> {
+    Command::new("xdg-open")
+        .arg(warp_new_window_uri(cwd))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开 Warp 失败：{error}"))
+}
+
 #[cfg(target_os = "windows")]
 fn available_terminal_options() -> Vec<TerminalOption> {
     let mut terminals = vec![terminal_option("auto", "自动选择")];
+    if find_warp().is_some() {
+        terminals.push(terminal_option("warp", "Warp"));
+    }
     if windows_command_exists("wt.exe") {
         terminals.push(terminal_option("windows-terminal", "Windows Terminal"));
     }
@@ -1141,6 +1181,7 @@ fn available_terminal_options() -> Vec<TerminalOption> {
 fn available_terminal_options() -> Vec<TerminalOption> {
     vec![
         terminal_option("auto", "自动选择"),
+        terminal_option("warp", "Warp"),
         terminal_option("terminal", "Terminal"),
         terminal_option("iterm", "iTerm"),
     ]
@@ -1150,6 +1191,7 @@ fn available_terminal_options() -> Vec<TerminalOption> {
 fn available_terminal_options() -> Vec<TerminalOption> {
     let mut terminals = vec![terminal_option("auto", "自动选择")];
     for (id, label) in [
+        ("warp-terminal", "Warp"),
         ("x-terminal-emulator", "系统默认终端"),
         ("gnome-terminal", "GNOME Terminal"),
         ("konsole", "Konsole"),
@@ -1167,6 +1209,27 @@ fn terminal_option(id: &str, label: &str) -> TerminalOption {
         id: id.to_string(),
         label: label.to_string(),
     }
+}
+
+fn warp_new_window_uri(cwd: &Path) -> String {
+    let cwd_text = cwd.to_string_lossy();
+    format!(
+        "warp://action/new_window?path={}",
+        percent_encode_uri_component(cwd_text.as_ref())
+    )
+}
+
+fn percent_encode_uri_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for &byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 #[cfg(target_os = "windows")]
@@ -1216,6 +1279,29 @@ fn find_git_bash() -> Option<PathBuf> {
     })
 }
 
+#[cfg(target_os = "windows")]
+fn find_warp() -> Option<PathBuf> {
+    find_windows_executable("warp.exe").or_else(|| {
+        let mut candidates = Vec::new();
+        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+            let root = PathBuf::from(local_app_data).join("Programs").join("Warp");
+            candidates.push(root.join("warp.exe"));
+            candidates.push(root.join("Warp.exe"));
+        }
+        if let Some(program_files) = env::var_os("ProgramFiles") {
+            let root = PathBuf::from(program_files).join("Warp");
+            candidates.push(root.join("warp.exe"));
+            candidates.push(root.join("Warp.exe"));
+        }
+        if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
+            let root = PathBuf::from(program_files_x86).join("Warp");
+            candidates.push(root.join("warp.exe"));
+            candidates.push(root.join("Warp.exe"));
+        }
+        candidates.into_iter().find(|path| path.is_file())
+    })
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 fn unix_command_exists(command: &str) -> bool {
     Command::new("sh")
@@ -1228,89 +1314,18 @@ fn unix_command_exists(command: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(target_os = "windows")]
-fn pick_path(file: bool) -> Result<Option<String>, String> {
-    let script = if file {
-        r#"
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = '选择工作文件'
-$dialog.CheckFileExists = $true
-$dialog.Multiselect = $false
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::Out.Write($dialog.FileName)
-}
-"#
-    } else {
-        r#"
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = '选择工作目录'
-$dialog.ShowNewFolderButton = $true
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::Out.Write($dialog.SelectedPath)
-}
-"#
-    };
-
-    let output = Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-STA")
-        .arg("-Command")
-        .arg(script)
-        .output()
-        .map_err(|error| format!("打开选择器失败：{error}"))?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok((!selected.is_empty()).then_some(selected))
-}
-
-#[cfg(target_os = "macos")]
-fn pick_path(file: bool) -> Result<Option<String>, String> {
-    let script = if file {
-        "POSIX path of (choose file with prompt \"选择工作文件\")"
-    } else {
-        "POSIX path of (choose folder with prompt \"选择工作目录\")"
-    };
-    let output = Command::new("osascript").arg("-e").arg(script).output();
-    dialog_output(output)
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn pick_path(file: bool) -> Result<Option<String>, String> {
-    let mut command = Command::new("zenity");
-    command.arg("--file-selection").arg("--title").arg(if file { "选择工作文件" } else { "选择工作目录" });
-    if !file {
-        command.arg("--directory");
-    }
-    dialog_output(command.output())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn dialog_output(output: std::io::Result<std::process::Output>) -> Result<Option<String>, String> {
-    let output = output.map_err(|error| format!("打开选择器失败：{error}"))?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok((!selected.is_empty()).then_some(selected))
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             find_pet_candidates,
             import_pet_package,
             start_codex_session_monitor,
             run_codex_task,
             open_terminal,
-            list_terminals,
-            pick_work_path
+            list_terminals
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
