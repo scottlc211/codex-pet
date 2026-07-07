@@ -119,6 +119,21 @@ type PetBubble = {
   message: string;
 };
 
+type CodexUsageLimit = {
+  label: string;
+  windowDurationMins: number | null;
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  resetsAt: number | null;
+};
+
+type CodexUsageLimits = {
+  status: string;
+  message: string;
+  fiveHour: CodexUsageLimit;
+  weekly: CodexUsageLimit;
+};
+
 const packagePathKey = "codex-pet:package-path";
 const workdirKey = "codex-pet:workdir";
 const petSizeKey = "codex-pet:pet-size";
@@ -180,6 +195,8 @@ function App() {
   const [petBubble, setPetBubble] = useState<PetBubble | null>(null);
   const [activePet, setActivePet] = useState<PetCandidate | null>(null);
   const [candidates, setCandidates] = useState<PetCandidate[]>([]);
+  const [codexUsage, setCodexUsage] = useState<CodexUsageLimits | null>(null);
+  const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [events, setEvents] = useState<CodexEvent[]>([
     { kind: "idle", message: "准备就绪", state: "idle" },
   ]);
@@ -303,6 +320,12 @@ function App() {
   useEffect(() => {
     localStorage.setItem(terminalKey, terminalId);
   }, [terminalId]);
+
+  useEffect(() => {
+    if (settingsOpen) {
+      void refreshCodexUsageLimits();
+    }
+  }, [settingsOpen]);
 
   useEffect(() => {
     if (!isTauriRuntime) {
@@ -484,6 +507,23 @@ function App() {
       }
     } catch (error) {
       pushEvent({ kind: "terminal.scan.error", message: String(error), state: "error" });
+    }
+  }
+
+  async function refreshCodexUsageLimits() {
+    if (!isTauriRuntime) {
+      setCodexUsage(unavailableCodexUsage("浏览器预览不支持读取 Codex 限额"));
+      return;
+    }
+
+    setCodexUsageLoading(true);
+    try {
+      const limits = await invoke<CodexUsageLimits>("get_codex_usage_limits");
+      setCodexUsage(limits);
+    } catch (error) {
+      setCodexUsage(unavailableCodexUsage(String(error)));
+    } finally {
+      setCodexUsageLoading(false);
     }
   }
 
@@ -993,8 +1033,44 @@ function App() {
 
             {settingsSection === "general" && (
               <div className="settings-page">
-                <div className="section-title">
+                <div className="section-title with-action">
                   <h2>通用</h2>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    title="刷新 Codex 限额"
+                    onClick={refreshCodexUsageLimits}
+                    disabled={codexUsageLoading}
+                  >
+                    <RefreshCw size={16} />
+                  </button>
+                </div>
+                <div className={`usage-card status-${codexUsage?.status ?? "loading"}`} aria-live="polite">
+                  <div className="usage-card-header">
+                    <div>
+                      <strong>Codex 使用限额</strong>
+                      <span>{codexUsageLoading ? "正在读取 Codex 限额" : codexUsage?.message ?? "尚未读取 Codex 限额"}</span>
+                    </div>
+                    {codexUsageLoading && <LoaderCircle size={16} />}
+                  </div>
+                  <div className="usage-grid">
+                    <div className="usage-item">
+                      <span>5 小时使用限额剩余</span>
+                      <strong>{formatLimitPercent(codexUsage?.fiveHour.remainingPercent)}</strong>
+                    </div>
+                    <div className="usage-item">
+                      <span>5 小时限额重置时间</span>
+                      <strong>{formatResetTime(codexUsage?.fiveHour.resetsAt)}</strong>
+                    </div>
+                    <div className="usage-item">
+                      <span>每周限额剩余</span>
+                      <strong>{formatLimitPercent(codexUsage?.weekly.remainingPercent)}</strong>
+                    </div>
+                    <div className="usage-item">
+                      <span>每周限额重置时间</span>
+                      <strong>{formatResetTime(codexUsage?.weekly.resetsAt)}</strong>
+                    </div>
+                  </div>
                 </div>
                 <label className="field">
                   <span>桌宠大小</span>
@@ -1437,6 +1513,52 @@ function clampPetSize(value: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function unavailableCodexUsage(message: string): CodexUsageLimits {
+  return {
+    status: "unavailable",
+    message,
+    fiveHour: unavailableUsageLimit("5 小时"),
+    weekly: unavailableUsageLimit("每周"),
+  };
+}
+
+function unavailableUsageLimit(label: string): CodexUsageLimit {
+  return {
+    label,
+    windowDurationMins: null,
+    usedPercent: null,
+    remainingPercent: null,
+    resetsAt: null,
+  };
+}
+
+function formatLimitPercent(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "暂不可用";
+  }
+
+  return `${clamp(value, 0, 100).toFixed(1)}%`;
+}
+
+function formatResetTime(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "暂不可用";
+  }
+
+  const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
+  const date = new Date(milliseconds);
+  if (Number.isNaN(date.getTime())) {
+    return "暂不可用";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function readPetSize() {

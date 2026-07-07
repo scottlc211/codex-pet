@@ -409,6 +409,92 @@ button {
   line-height: 1.2;
 }
 
+.usage-card {
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(15, 59, 58, 0.12);
+  border-radius: 8px;
+  background: rgba(251, 255, 254, 0.96);
+}
+
+.usage-card.status-unavailable {
+  border-color: rgba(217, 45, 32, 0.18);
+  background: rgba(255, 248, 246, 0.96);
+}
+
+.usage-card-header {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.usage-card-header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.usage-card-header strong {
+  color: #10201f;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.usage-card-header span {
+  overflow: hidden;
+  color: #526461;
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-card-header svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #176f68;
+  animation: spin 1s linear infinite;
+}
+
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.usage-item {
+  min-width: 0;
+  min-height: 52px;
+  padding: 8px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border-radius: 8px;
+  background: rgba(243, 250, 248, 0.86);
+}
+
+.usage-item span,
+.usage-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-item span {
+  color: #526461;
+  font-size: 11px;
+}
+
+.usage-item strong {
+  color: #0f3b3a;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
 .range-row {
   display: grid;
   grid-template-columns: 1fr 54px;
