@@ -1,19 +1,18 @@
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
     env,
     fs::{self, File},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::atomic::{AtomicBool, Ordering},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Emitter};
 use zip::ZipArchive;
 
@@ -21,9 +20,16 @@ static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 
 const ACTIVE_SESSION_WINDOW_MS: u128 = 10 * 60 * 1000;
 const POLL_INTERVAL: Duration = Duration::from_millis(1500);
-const CODEX_USAGE_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_ZIP_BYTES: u64 = 80 * 1024 * 1024;
 const MAX_EXTRACTED_FILE_BYTES: u64 = 30 * 1024 * 1024;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(target_os = "windows")]
+fn hide_command_window(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,35 +68,11 @@ struct TerminalOption {
     label: String,
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexUsageLimits {
-    status: String,
-    message: String,
-    five_hour: CodexUsageLimit,
-    weekly: CodexUsageLimit,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexUsageLimit {
-    label: String,
-    window_duration_mins: Option<u64>,
-    used_percent: Option<f64>,
-    remaining_percent: Option<f64>,
-    resets_at: Option<f64>,
-}
-
 #[derive(Clone, Copy)]
 struct AtlasRow {
     key: &'static str,
     row: u32,
     durations: &'static [u32],
-}
-
-enum AppServerOutput {
-    Json(Value),
-    Eof,
 }
 
 const ATLAS_FRAME_WIDTH: u32 = 192;
@@ -297,11 +279,6 @@ fn list_terminals() -> Vec<TerminalOption> {
     available_terminal_options()
 }
 
-#[tauri::command]
-fn get_codex_usage_limits(codex_path: Option<String>) -> CodexUsageLimits {
-    read_codex_usage_limits(codex_path).unwrap_or_else(CodexUsageLimits::unavailable)
-}
-
 fn emit_codex_event(
     app: &AppHandle,
     kind: &str,
@@ -376,34 +353,6 @@ fn summarize_item(value: &Value) -> (String, Option<&'static str>) {
     }
 }
 
-impl CodexUsageLimits {
-    fn unavailable(message: String) -> Self {
-        Self {
-            status: "unavailable".to_string(),
-            message,
-            five_hour: CodexUsageLimit::unavailable("5 小时"),
-            weekly: CodexUsageLimit::unavailable("每周"),
-        }
-    }
-}
-
-impl CodexUsageLimit {
-    fn unavailable(label: &str) -> Self {
-        Self {
-            label: label.to_string(),
-            window_duration_mins: None,
-            used_percent: None,
-            remaining_percent: None,
-            resets_at: None,
-        }
-    }
-}
-
-fn read_codex_usage_limits(codex_path: Option<String>) -> Result<CodexUsageLimits, String> {
-    let result = request_codex_rate_limits(codex_path)?;
-    parse_codex_usage_limits(&result)
-}
-
 fn new_codex_command(codex_path: Option<String>) -> Result<Command, String> {
     let executable = resolve_codex_executable(codex_path)?;
     Ok(command_for_executable(&executable))
@@ -468,10 +417,13 @@ fn command_for_executable(executable: &Path) -> Command {
     if is_cmd_script {
         let mut command = Command::new("cmd");
         command.arg("/C").arg(executable);
+        hide_command_window(&mut command);
         return command;
     }
 
-    Command::new(executable)
+    let mut command = Command::new(executable);
+    hide_command_window(&mut command);
+    command
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -539,224 +491,6 @@ fn sibling_with_extension(path: &Path, extension: &str) -> Option<PathBuf> {
 #[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
 fn auto_detect_named_executable(command: &str) -> Option<PathBuf> {
     find_unix_executable(command)
-}
-
-fn request_codex_rate_limits(codex_path: Option<String>) -> Result<Value, String> {
-    let mut child = new_codex_command(codex_path)
-        .map_err(|error| format!("无法启动 Codex app-server：{error}"))?
-        .arg("app-server")
-        .arg("--stdio")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("无法启动 Codex app-server：{error}"))?;
-
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "无法写入 Codex app-server".to_string())?;
-    let mut stdin = Some(stdin);
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "无法读取 Codex app-server 输出".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "无法读取 Codex app-server 错误输出".to_string())?;
-
-    let (tx, rx) = mpsc::channel();
-    let stdout_thread = thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                let _ = tx.send(AppServerOutput::Json(value));
-            }
-        }
-        let _ = tx.send(AppServerOutput::Eof);
-    });
-    let stderr_thread = thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut output = String::new();
-        let _ = reader.read_to_string(&mut output);
-        output
-    });
-
-    let initialize = json!({
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "clientInfo": {
-                "name": "codex-pet",
-                "title": "Codex Pet",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-            "capabilities": null,
-        },
-    });
-    let rate_limits = json!({
-        "id": 2,
-        "method": "account/rateLimits/read",
-        "params": null,
-    });
-
-    writeln!(
-        stdin
-            .as_mut()
-            .ok_or_else(|| "Codex app-server 输入已关闭".to_string())?,
-        "{initialize}"
-    )
-        .map_err(|error| format!("发送 Codex 初始化请求失败：{error}"))?;
-
-    let deadline = Instant::now() + CODEX_USAGE_TIMEOUT;
-    let mut initialized = false;
-    loop {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_thread.join();
-            let stderr = stderr_thread.join().unwrap_or_default();
-            return Err(format_app_server_error("读取 Codex 限额超时", &stderr));
-        };
-
-        match rx.recv_timeout(remaining) {
-            Ok(AppServerOutput::Json(value)) => {
-                if value.get("id").and_then(Value::as_u64) == Some(1) {
-                    if let Some(error) = value.get("error") {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let _ = stdout_thread.join();
-                        let stderr = stderr_thread.join().unwrap_or_default();
-                        return Err(format_app_server_error(&app_server_json_error(error), &stderr));
-                    }
-
-                    if !initialized {
-                        initialized = true;
-                        if let Some(mut stdin) = stdin.take() {
-                            writeln!(stdin, "{rate_limits}")
-                                .map_err(|error| format!("发送 Codex 限额请求失败：{error}"))?;
-                        }
-                    }
-                    continue;
-                }
-
-                if value.get("id").and_then(Value::as_u64) != Some(2) {
-                    continue;
-                }
-
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_thread.join();
-                let stderr = stderr_thread.join().unwrap_or_default();
-
-                if let Some(error) = value.get("error") {
-                    return Err(format_app_server_error(&app_server_json_error(error), &stderr));
-                }
-
-                return value
-                    .get("result")
-                    .cloned()
-                    .ok_or_else(|| format_app_server_error("Codex 未返回限额结果", &stderr));
-            }
-            Ok(AppServerOutput::Eof) => {
-                let _ = child.wait();
-                let _ = stdout_thread.join();
-                let stderr = stderr_thread.join().unwrap_or_default();
-                return Err(format_app_server_error("Codex 未返回限额响应", &stderr));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_thread.join();
-                let stderr = stderr_thread.join().unwrap_or_default();
-                return Err(format_app_server_error("读取 Codex 限额超时", &stderr));
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = child.wait();
-                let _ = stdout_thread.join();
-                let stderr = stderr_thread.join().unwrap_or_default();
-                return Err(format_app_server_error("Codex 限额读取连接已断开", &stderr));
-            }
-        }
-    }
-}
-
-fn parse_codex_usage_limits(result: &Value) -> Result<CodexUsageLimits, String> {
-    let snapshot = result
-        .get("rateLimitsByLimitId")
-        .and_then(|value| value.get("codex"))
-        .or_else(|| result.get("rateLimits"))
-        .ok_or_else(|| "Codex 未返回 rateLimits".to_string())?;
-
-    let five_hour = parse_codex_usage_limit("5 小时", snapshot.get("primary"));
-    let weekly = parse_codex_usage_limit("每周", snapshot.get("secondary"));
-    let has_limit_data = five_hour.used_percent.is_some()
-        || five_hour.resets_at.is_some()
-        || weekly.used_percent.is_some()
-        || weekly.resets_at.is_some();
-
-    if has_limit_data {
-        Ok(CodexUsageLimits {
-            status: "available".to_string(),
-            message: "已读取 Codex 使用限额".to_string(),
-            five_hour,
-            weekly,
-        })
-    } else {
-        Ok(CodexUsageLimits {
-            status: "unavailable".to_string(),
-            message: "Codex 未返回 5 小时或每周限额数据".to_string(),
-            five_hour,
-            weekly,
-        })
-    }
-}
-
-fn parse_codex_usage_limit(label: &str, value: Option<&Value>) -> CodexUsageLimit {
-    let Some(value) = value else {
-        return CodexUsageLimit::unavailable(label);
-    };
-
-    let used_percent = value.get("usedPercent").and_then(Value::as_f64);
-    let remaining_percent = used_percent.map(|percent| (100.0 - percent).clamp(0.0, 100.0));
-
-    CodexUsageLimit {
-        label: label.to_string(),
-        window_duration_mins: value.get("windowDurationMins").and_then(Value::as_u64),
-        used_percent,
-        remaining_percent,
-        resets_at: value.get("resetsAt").and_then(Value::as_f64),
-    }
-}
-
-fn app_server_json_error(error: &Value) -> String {
-    error
-        .get("message")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| error.to_string())
-}
-
-fn format_app_server_error(summary: &str, stderr: &str) -> String {
-    let stderr = stderr.trim();
-    if stderr.is_empty() {
-        summary.to_string()
-    } else {
-        format!("{summary}：{}", truncate_message(stderr, 240))
-    }
-}
-
-fn truncate_message(value: &str, max_chars: usize) -> String {
-    let mut output = String::new();
-    for (index, ch) in value.chars().enumerate() {
-        if index >= max_chars {
-            output.push_str("...");
-            break;
-        }
-        output.push(ch);
-    }
-    output
 }
 
 fn pet_roots() -> Vec<PathBuf> {
@@ -1483,7 +1217,9 @@ fn open_windows_terminal(terminal_id: &str, cwd: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn spawn_windows_start(program: &str, args: &[String]) -> Result<(), String> {
-    Command::new("cmd")
+    let mut command = Command::new("cmd");
+    hide_command_window(&mut command);
+    command
         .arg("/C")
         .arg("start")
         .arg("")
@@ -1496,7 +1232,9 @@ fn spawn_windows_start(program: &str, args: &[String]) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn open_warp_terminal(cwd: &Path) -> Result<(), String> {
-    Command::new("rundll32.exe")
+    let mut command = Command::new("rundll32.exe");
+    hide_command_window(&mut command);
+    command
         .arg("url.dll,FileProtocolHandler")
         .arg(warp_new_window_uri(cwd))
         .spawn()
@@ -1702,7 +1440,9 @@ fn windows_command_exists(command: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn find_windows_executable(command: &str) -> Option<PathBuf> {
-    let output = Command::new("cmd")
+    let mut where_command = Command::new("cmd");
+    hide_command_window(&mut where_command);
+    let output = where_command
         .arg("/C")
         .arg("where")
         .arg(command)
@@ -1767,8 +1507,7 @@ pub fn run() {
             start_codex_session_monitor,
             run_codex_task,
             open_terminal,
-            list_terminals,
-            get_codex_usage_limits
+            list_terminals
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
