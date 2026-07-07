@@ -229,6 +229,7 @@ function App() {
   const reminderTokenRef = useRef(0);
   const settingsReturnPositionRef = useRef<PhysicalPosition | null>(null);
   const settingsReturnBubbleReserveRef = useRef(0);
+  const windowLayoutKeyRef = useRef("");
   const windowAlwaysOnTopRef = useRef(true);
   const windowAlwaysOnBottomRef = useRef(false);
 
@@ -309,8 +310,16 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem(petSizeKey, String(petSize));
+    const nextLayoutKey = settingsOpen
+      ? `settings:${petSize}`
+      : `compact:${petSize}:${bubbleVisible ? "bubble" : "plain"}`;
+    if (windowLayoutKeyRef.current === nextLayoutKey) {
+      return;
+    }
+    windowLayoutKeyRef.current = nextLayoutKey;
+
     const returnPosition = settingsReturnPositionRef.current;
-    const nextBubbleReserve = bubbleVisible ? petBubbleReserve : 0;
+    const nextBubbleReserve = !settingsOpen && bubbleVisible ? petBubbleReserve : 0;
     const previousBubbleReserve = petBubbleReserveRef.current;
     const returnBubbleReserve = settingsReturnBubbleReserveRef.current;
     void resizeWindow(
