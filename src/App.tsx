@@ -113,6 +113,12 @@ type TerminalOption = {
   label: string;
 };
 
+type PetBubble = {
+  tone: "working" | "success" | "error";
+  label: string;
+  message: string;
+};
+
 const packagePathKey = "codex-pet:package-path";
 const workdirKey = "codex-pet:workdir";
 const petSizeKey = "codex-pet:pet-size";
@@ -130,6 +136,7 @@ const windowPadding = petCanvasPadding + 24;
 const defaultPetVisualOffsetX = -24;
 const defaultPetVisualOffsetY = -28;
 const petVisualOffsetLimit = 36;
+const petBubbleReserve = 72;
 const petHitWidthRatio = 0.82;
 const petHitHeightRatio = 0.92;
 const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
@@ -152,6 +159,8 @@ const stateLabels: Record<PetState, string> = {
   carrying: "搬运",
 };
 
+const activeTaskStates = new Set<PetState>(["thinking", "working", "running_command", "editing_file"]);
+
 function App() {
   const [packagePath, setPackagePath] = useState(() => localStorage.getItem(packagePathKey) ?? "");
   const [workdir, setWorkdir] = useState(() => localStorage.getItem(workdirKey) ?? "");
@@ -168,12 +177,15 @@ function App() {
   const [task, setTask] = useState("");
   const [running, setRunning] = useState(false);
   const [currentState, setCurrentState] = useState<PetState>("idle");
+  const [petBubble, setPetBubble] = useState<PetBubble | null>(null);
   const [activePet, setActivePet] = useState<PetCandidate | null>(null);
   const [candidates, setCandidates] = useState<PetCandidate[]>([]);
   const [events, setEvents] = useState<CodexEvent[]>([
     { kind: "idle", message: "准备就绪", state: "idle" },
   ]);
   const idleTimerRef = useRef<number | null>(null);
+  const idleAfterDragRef = useRef(false);
+  const petBubbleReserveRef = useRef(0);
   const dragRef = useRef<DragSession | null>(null);
   const modalDragRef = useRef<ModalDragSession | null>(null);
   const settingsReturnPositionRef = useRef<PhysicalPosition | null>(null);
@@ -189,12 +201,15 @@ function App() {
 
   const latestMessage = events[events.length - 1]?.message ?? "准备就绪";
   const statusLabel = stateLabels[currentState] ?? "空闲";
+  const bubbleVisible = petBubble !== null;
   const visualIdentity = visual
     ? `${visual.kind}-${visual.path}-${visual.row ?? "single"}-${currentState}`
     : `default-${currentState}`;
   const shellStyle = {
     "--pet-size": `${petSize}px`,
     "--pet-canvas-size": `${petSize + petCanvasPadding}px`,
+    "--pet-bubble-reserve": `${bubbleVisible ? petBubbleReserve : 0}px`,
+    "--pet-bubble-shift": `${bubbleVisible ? petBubbleReserve / 2 : 0}px`,
     "--pet-visual-offset-x": `${petOffsetX}px`,
     "--pet-visual-offset-y": `${petOffsetY}px`,
   } as CSSProperties;
@@ -232,21 +247,19 @@ function App() {
         setCurrentState(nextState);
       }
 
-      if (
-        nextState === "thinking" ||
-        nextState === "working" ||
-        nextState === "running_command" ||
-        nextState === "editing_file"
-      ) {
-        setRunning(true);
-      }
+      if (nextState !== null) {
+        updatePetBubble(nextState, next.message);
+        if (activeTaskStates.has(nextState)) {
+          setRunning(true);
+        }
 
-      if (nextState === "idle" || nextState === "success" || nextState === "error") {
-        setRunning(false);
-      }
+        if (nextState === "idle" || nextState === "success" || nextState === "error") {
+          setRunning(false);
+        }
 
-      if (nextState === "success" || nextState === "error") {
-        scheduleIdle();
+        if (nextState === "success" || nextState === "error") {
+          scheduleIdle();
+        }
       }
     });
 
@@ -259,8 +272,13 @@ function App() {
   useEffect(() => {
     localStorage.setItem(petSizeKey, String(petSize));
     const returnPosition = settingsReturnPositionRef.current;
-    void resizeWindow(settingsOpen, petSize, returnPosition)
+    const nextBubbleReserve = bubbleVisible ? petBubbleReserve : 0;
+    const previousBubbleReserve = petBubbleReserveRef.current;
+    void resizeWindow(settingsOpen, petSize, returnPosition, nextBubbleReserve, previousBubbleReserve)
       .then(() => {
+        if (!settingsOpen) {
+          petBubbleReserveRef.current = nextBubbleReserve;
+        }
         if (!settingsOpen && returnPosition) {
           settingsReturnPositionRef.current = null;
         }
@@ -268,7 +286,7 @@ function App() {
       .catch((error) => {
         pushEvent({ kind: "window.resize.error", message: String(error), state: "error" });
       });
-  }, [petSize, settingsOpen]);
+  }, [petSize, settingsOpen, bubbleVisible]);
 
   useEffect(() => {
     localStorage.setItem(petOffsetXKey, String(petOffsetX));
@@ -516,7 +534,9 @@ function App() {
     setSettingsOpen(false);
     setContextMenuOpen(false);
     setCurrentState("thinking");
-    pushEvent({ kind: "queued", message: "任务已发送", state: "thinking" });
+    const queuedEvent: CodexEvent = { kind: "queued", message: "任务已发送", state: "thinking" };
+    pushEvent(queuedEvent);
+    updatePetBubble("thinking", queuedEvent.message);
 
     try {
       await invoke("run_codex_task", {
@@ -527,7 +547,9 @@ function App() {
     } catch (error) {
       setRunning(false);
       setCurrentState("error");
-      pushEvent({ kind: "error", message: String(error), state: "error" });
+      const errorMessage = String(error);
+      pushEvent({ kind: "error", message: errorMessage, state: "error" });
+      updatePetBubble("error", errorMessage);
       scheduleIdle();
     }
   }
@@ -536,11 +558,45 @@ function App() {
     setEvents((current) => [...current.slice(-5), event]);
   }
 
+  function updatePetBubble(state: PetState, message: string) {
+    if (activeTaskStates.has(state)) {
+      setPetBubble({
+        tone: "working",
+        label: "进行中",
+        message: normalizeBubbleMessage(message, "Codex 正在处理任务"),
+      });
+      return;
+    }
+
+    if (state === "success") {
+      setPetBubble({
+        tone: "success",
+        label: "成功",
+        message: normalizeBubbleMessage(message, "任务完成"),
+      });
+      return;
+    }
+
+    if (state === "error") {
+      setPetBubble({
+        tone: "error",
+        label: "失败",
+        message: normalizeBubbleMessage(message, "任务失败"),
+      });
+      return;
+    }
+
+    if (state === "idle") {
+      setPetBubble(null);
+    }
+  }
+
   function clearIdleTimer() {
     if (idleTimerRef.current !== null) {
       window.clearTimeout(idleTimerRef.current);
       idleTimerRef.current = null;
     }
+    idleAfterDragRef.current = false;
   }
 
   function scheduleIdle() {
@@ -548,6 +604,9 @@ function App() {
     idleTimerRef.current = window.setTimeout(() => {
       if (!isDragging()) {
         setCurrentState("idle");
+        setPetBubble(null);
+      } else {
+        idleAfterDragRef.current = true;
       }
       idleTimerRef.current = null;
     }, 2600);
@@ -660,6 +719,13 @@ function App() {
     } catch {
       // Pointer capture may already be released by the OS.
     }
+    if (idleAfterDragRef.current && !running) {
+      idleAfterDragRef.current = false;
+      setCurrentState("idle");
+      setPetBubble(null);
+      return;
+    }
+
     setCurrentState(running ? "working" : drag.previousState === "idle" ? "idle" : drag.previousState);
   }
 
@@ -828,7 +894,7 @@ function App() {
   return (
     <main className={`pet-shell ${settingsOpen ? "has-settings" : ""}`} style={shellStyle}>
       <section
-        className={`pet-stage state-${currentState} render-${renderMode}`}
+        className={`pet-stage state-${currentState} render-${renderMode} ${bubbleVisible ? "has-bubble" : ""}`}
         aria-label="桌宠"
         onPointerDown={startPetDrag}
         onPointerMove={movePet}
@@ -836,6 +902,12 @@ function App() {
         onPointerCancel={endPetDrag}
         onContextMenu={openContextMenu}
       >
+        {petBubble && (
+          <div className={`pet-bubble tone-${petBubble.tone}`} role="status" aria-live="polite">
+            <strong>{petBubble.label}</strong>
+            <span>{petBubble.message}</span>
+          </div>
+        )}
         <PetVisualView
           key={visualIdentity}
           visual={visual}
@@ -1249,7 +1321,13 @@ function normalizeEventState(event: CodexEvent): PetState | null {
   }
 }
 
-async function resizeWindow(settingsOpen: boolean, petSize: number, returnPosition: PhysicalPosition | null) {
+async function resizeWindow(
+  settingsOpen: boolean,
+  petSize: number,
+  returnPosition: PhysicalPosition | null,
+  bubbleReserve: number,
+  previousBubbleReserve: number,
+) {
   if (!isTauriRuntime) {
     return;
   }
@@ -1261,9 +1339,12 @@ async function resizeWindow(settingsOpen: boolean, petSize: number, returnPositi
     return;
   }
 
-  await appWindow.setSize(new LogicalSize(petSize + windowPadding, petSize + windowPadding));
+  await appWindow.setSize(new LogicalSize(petSize + windowPadding, petSize + windowPadding + bubbleReserve));
   if (returnPosition) {
     await appWindow.setPosition(returnPosition);
+  } else if (bubbleReserve !== previousBubbleReserve) {
+    const position = await appWindow.outerPosition();
+    await appWindow.setPosition(new PhysicalPosition(position.x, position.y - (bubbleReserve - previousBubbleReserve)));
   }
 }
 
@@ -1379,6 +1460,14 @@ function clampPetOffset(value: number) {
     return 0;
   }
   return clamp(Math.round(value), -petVisualOffsetLimit, petVisualOffsetLimit);
+}
+
+function normalizeBubbleMessage(message: string, fallback: string) {
+  const text = message.trim().replace(/\s+/g, " ");
+  if (!text) {
+    return fallback;
+  }
+  return text.length > 34 ? `${text.slice(0, 33)}...` : text;
 }
 
 function readRenderMode(): RenderMode {
