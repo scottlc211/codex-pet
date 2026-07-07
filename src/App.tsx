@@ -20,6 +20,7 @@ import {
   type Monitor,
 } from "@tauri-apps/api/window";
 import {
+  Bell,
   Check,
   FileSearch,
   FolderOpen,
@@ -55,7 +56,7 @@ type PetState =
   | "carrying";
 
 type RenderMode = "smooth" | "pixelated";
-type SettingsSection = "general" | "theme" | "work";
+type SettingsSection = "general" | "theme" | "reminder" | "work";
 type ModalPosition = { x: number; y: number };
 type DragBounds = { minX: number; minY: number; maxX: number; maxY: number };
 
@@ -114,9 +115,20 @@ type TerminalOption = {
 };
 
 type PetBubble = {
-  tone: "working" | "success" | "error";
+  tone: "working" | "success" | "error" | "reminder";
   label: string;
   message: string;
+  dismissible?: boolean;
+  source?: "status" | "reminder";
+};
+
+type ReminderConfig = {
+  enabled: boolean;
+  title: string;
+  message: string;
+  weekday: number;
+  time: string;
+  durationMinutes: number;
 };
 
 type CodexUsageLimit = {
@@ -141,6 +153,7 @@ const petOffsetXKey = "codex-pet:pet-offset-x";
 const petOffsetYKey = "codex-pet:pet-offset-y";
 const renderModeKey = "codex-pet:render-mode";
 const terminalKey = "codex-pet:terminal";
+const reminderConfigKey = "codex-pet:reminder-config";
 const defaultPetSize = 236;
 const settingsWidth = 760;
 const settingsHeight = 520;
@@ -154,9 +167,28 @@ const petVisualOffsetLimit = 36;
 const petBubbleReserve = 72;
 const petHitWidthRatio = 0.82;
 const petHitHeightRatio = 0.92;
+const settingsPreviewGap = 32;
+const maxReminderDurationMinutes = 24 * 60;
 const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
 const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const reminderWeekdayOptions = [
+  { value: 1, label: "周一" },
+  { value: 2, label: "周二" },
+  { value: 3, label: "周三" },
+  { value: 4, label: "周四" },
+  { value: 5, label: "周五" },
+  { value: 6, label: "周六" },
+  { value: 0, label: "周日" },
+] as const;
+const defaultReminderConfig: ReminderConfig = {
+  enabled: false,
+  title: "周报提醒",
+  message: "老大，该写周报了。",
+  weekday: 5,
+  time: "16:00",
+  durationMinutes: 0,
+};
 
 const stateLabels: Record<PetState, string> = {
   idle: "空闲",
@@ -183,6 +215,7 @@ function App() {
   const [petOffsetX, setPetOffsetX] = useState(() => readPetOffset(petOffsetXKey, defaultPetVisualOffsetX));
   const [petOffsetY, setPetOffsetY] = useState(() => readPetOffset(petOffsetYKey, defaultPetVisualOffsetY));
   const [renderMode, setRenderMode] = useState<RenderMode>(() => readRenderMode());
+  const [reminderConfig, setReminderConfig] = useState<ReminderConfig>(() => readReminderConfig());
   const [terminalId, setTerminalId] = useState(() => localStorage.getItem(terminalKey) ?? autoTerminal.id);
   const [terminals, setTerminals] = useState<TerminalOption[]>([autoTerminal]);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
@@ -197,6 +230,7 @@ function App() {
   const [candidates, setCandidates] = useState<PetCandidate[]>([]);
   const [codexUsage, setCodexUsage] = useState<CodexUsageLimits | null>(null);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
+  const [nextReminderAt, setNextReminderAt] = useState<number | null>(null);
   const [events, setEvents] = useState<CodexEvent[]>([
     { kind: "idle", message: "准备就绪", state: "idle" },
   ]);
@@ -205,8 +239,13 @@ function App() {
   const petBubbleReserveRef = useRef(0);
   const dragRef = useRef<DragSession | null>(null);
   const modalDragRef = useRef<ModalDragSession | null>(null);
+  const reminderTimerRef = useRef<number | null>(null);
+  const reminderAutoHideTimerRef = useRef<number | null>(null);
+  const reminderTokenRef = useRef(0);
   const settingsReturnPositionRef = useRef<PhysicalPosition | null>(null);
+  const settingsReturnBubbleReserveRef = useRef(0);
   const windowAlwaysOnTopRef = useRef(true);
+  const windowAlwaysOnBottomRef = useRef(false);
 
   const visual = useMemo(() => {
     if (!activePet) {
@@ -274,9 +313,6 @@ function App() {
           setRunning(false);
         }
 
-        if (nextState === "success" || nextState === "error") {
-          scheduleIdle();
-        }
       }
     });
 
@@ -291,13 +327,22 @@ function App() {
     const returnPosition = settingsReturnPositionRef.current;
     const nextBubbleReserve = bubbleVisible ? petBubbleReserve : 0;
     const previousBubbleReserve = petBubbleReserveRef.current;
-    void resizeWindow(settingsOpen, petSize, returnPosition, nextBubbleReserve, previousBubbleReserve)
+    const returnBubbleReserve = settingsReturnBubbleReserveRef.current;
+    void resizeWindow(
+      settingsOpen,
+      petSize,
+      returnPosition,
+      nextBubbleReserve,
+      previousBubbleReserve,
+      returnBubbleReserve,
+    )
       .then(() => {
         if (!settingsOpen) {
           petBubbleReserveRef.current = nextBubbleReserve;
         }
         if (!settingsOpen && returnPosition) {
           settingsReturnPositionRef.current = null;
+          settingsReturnBubbleReserveRef.current = 0;
         }
       })
       .catch((error) => {
@@ -318,6 +363,10 @@ function App() {
   }, [renderMode]);
 
   useEffect(() => {
+    localStorage.setItem(reminderConfigKey, JSON.stringify(reminderConfig));
+  }, [reminderConfig]);
+
+  useEffect(() => {
     localStorage.setItem(terminalKey, terminalId);
   }, [terminalId]);
 
@@ -326,6 +375,21 @@ function App() {
       void refreshCodexUsageLimits();
     }
   }, [settingsOpen]);
+
+  useEffect(() => {
+    scheduleNextReminder();
+
+    return () => {
+      clearReminderScheduleTimer();
+    };
+  }, [reminderConfig]);
+
+  useEffect(() => {
+    return () => {
+      clearReminderScheduleTimer();
+      clearReminderAutoHideTimer();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime) {
@@ -363,6 +427,33 @@ function App() {
       }
     }
 
+    async function setWindowAlwaysOnBottom(next: boolean) {
+      if (windowAlwaysOnBottomRef.current === next) {
+        return;
+      }
+
+      try {
+        await appWindow.setAlwaysOnBottom(next);
+        windowAlwaysOnBottomRef.current = next;
+      } catch (error) {
+        if (!layerErrorReported) {
+          layerErrorReported = true;
+          pushEvent({ kind: "window.layer.error", message: String(error), state: "error" });
+        }
+      }
+    }
+
+    async function setWindowLayer(alwaysOnTop: boolean, alwaysOnBottom: boolean) {
+      if (alwaysOnTop) {
+        await setWindowAlwaysOnBottom(false);
+      }
+      if (alwaysOnBottom) {
+        await setWindowAlwaysOnTop(false);
+      }
+      await setWindowAlwaysOnTop(alwaysOnTop);
+      await setWindowAlwaysOnBottom(alwaysOnBottom);
+    }
+
     async function updateCursorHitArea() {
       if (disposed) {
         return;
@@ -371,7 +462,7 @@ function App() {
       try {
         if (isDragging() || modalDragRef.current) {
           await setIgnoreCursorEvents(false);
-          await setWindowAlwaysOnTop(true);
+          await setWindowLayer(true, false);
         } else if (settingsOpen) {
           const [cursor, position, scaleFactor] = await Promise.all([
             cursorPosition(),
@@ -398,12 +489,10 @@ function App() {
             relativeY <= petRect.bottom;
           const insideAppControl = insideModal || insidePet;
           await setIgnoreCursorEvents(!insideAppControl);
-          if (windowFocused && insideAppControl) {
-            await setWindowAlwaysOnTop(true);
-          }
+          await setWindowLayer(false, !windowFocused);
         } else if (contextMenuOpen) {
           await setIgnoreCursorEvents(false);
-          await setWindowAlwaysOnTop(true);
+          await setWindowLayer(true, false);
         } else {
           const [cursor, position, size] = await Promise.all([
             cursorPosition(),
@@ -428,7 +517,7 @@ function App() {
             cursor.y >= position.y + hitTop &&
             cursor.y <= position.y + hitTop + hitHeight;
           await setIgnoreCursorEvents(!insideHotArea);
-          await setWindowAlwaysOnTop(true);
+          await setWindowLayer(true, false);
         }
       } catch {
         await setIgnoreCursorEvents(false).catch(() => undefined);
@@ -443,9 +532,9 @@ function App() {
     const unlistenFocusPromise = appWindow.onFocusChanged(({ payload: focused }) => {
       windowFocused = focused;
       if (settingsOpen) {
-        void setWindowAlwaysOnTop(focused);
+        void setWindowLayer(false, !focused);
       } else if (focused) {
-        void setWindowAlwaysOnTop(true);
+        void setWindowLayer(true, false);
       }
     });
 
@@ -456,6 +545,9 @@ function App() {
       }
       void unlistenFocusPromise.then((unlisten) => unlisten());
       void appWindow.setIgnoreCursorEvents(false).catch(() => undefined);
+      void appWindow.setAlwaysOnBottom(false).then(() => {
+        windowAlwaysOnBottomRef.current = false;
+      }).catch(() => undefined);
       void appWindow.setAlwaysOnTop(true).then(() => {
         windowAlwaysOnTopRef.current = true;
       }).catch(() => undefined);
@@ -590,7 +682,6 @@ function App() {
       const errorMessage = String(error);
       pushEvent({ kind: "error", message: errorMessage, state: "error" });
       updatePetBubble("error", errorMessage);
-      scheduleIdle();
     }
   }
 
@@ -598,12 +689,81 @@ function App() {
     setEvents((current) => [...current.slice(-5), event]);
   }
 
+  function clearReminderScheduleTimer() {
+    if (reminderTimerRef.current !== null) {
+      window.clearTimeout(reminderTimerRef.current);
+      reminderTimerRef.current = null;
+    }
+  }
+
+  function clearReminderAutoHideTimer() {
+    if (reminderAutoHideTimerRef.current !== null) {
+      window.clearTimeout(reminderAutoHideTimerRef.current);
+      reminderAutoHideTimerRef.current = null;
+    }
+  }
+
+  function scheduleNextReminder() {
+    clearReminderScheduleTimer();
+    const nextTrigger = nextReminderDate(reminderConfig);
+    setNextReminderAt(nextTrigger?.getTime() ?? null);
+    if (!nextTrigger) {
+      return;
+    }
+
+    const delay = Math.max(0, nextTrigger.getTime() - Date.now());
+    reminderTimerRef.current = window.setTimeout(() => {
+      triggerReminderBubble(reminderConfig);
+      scheduleNextReminder();
+    }, delay);
+  }
+
+  function triggerReminderBubble(config: ReminderConfig) {
+    clearReminderAutoHideTimer();
+    reminderTokenRef.current += 1;
+    const nextToken = reminderTokenRef.current;
+    const title = config.title.trim() || defaultReminderConfig.title;
+    const message = normalizeBubbleMessage(config.message, defaultReminderConfig.message);
+
+    setPetBubble({
+      tone: "reminder",
+      label: title,
+      message,
+      dismissible: true,
+      source: "reminder",
+    });
+    pushEvent({ kind: "reminder.triggered", message: `${title}：${message}`, state: "idle" });
+
+    if (config.durationMinutes > 0) {
+      reminderAutoHideTimerRef.current = window.setTimeout(() => {
+        if (reminderTokenRef.current !== nextToken) {
+          return;
+        }
+
+        setPetBubble((current) => (current?.source === "reminder" ? null : current));
+        reminderAutoHideTimerRef.current = null;
+      }, config.durationMinutes * 60 * 1000);
+    }
+  }
+
+  function previewReminder() {
+    triggerReminderBubble(reminderConfig);
+  }
+
   function updatePetBubble(state: PetState, message: string) {
+    if (state === "idle") {
+      setPetBubble((current) => (current?.source === "reminder" ? current : null));
+      return;
+    }
+
+    clearIdleTimer();
+
     if (activeTaskStates.has(state)) {
       setPetBubble({
         tone: "working",
         label: "进行中",
         message: normalizeBubbleMessage(message, "Codex 正在处理任务"),
+        source: "status",
       });
       return;
     }
@@ -613,6 +773,8 @@ function App() {
         tone: "success",
         label: "成功",
         message: normalizeBubbleMessage(message, "任务完成"),
+        dismissible: true,
+        source: "status",
       });
       return;
     }
@@ -622,12 +784,20 @@ function App() {
         tone: "error",
         label: "失败",
         message: normalizeBubbleMessage(message, "任务失败"),
+        dismissible: true,
+        source: "status",
       });
       return;
     }
+  }
 
-    if (state === "idle") {
-      setPetBubble(null);
+  function closePetBubble() {
+    clearIdleTimer();
+    clearReminderAutoHideTimer();
+    const closingBubble = petBubble;
+    setPetBubble(null);
+    if (closingBubble?.source !== "reminder" && (currentState === "success" || currentState === "error")) {
+      setCurrentState("idle");
     }
   }
 
@@ -644,7 +814,7 @@ function App() {
     idleTimerRef.current = window.setTimeout(() => {
       if (!isDragging()) {
         setCurrentState("idle");
-        setPetBubble(null);
+        setPetBubble((current) => (current?.source === "reminder" ? current : null));
       } else {
         idleAfterDragRef.current = true;
       }
@@ -762,7 +932,7 @@ function App() {
     if (idleAfterDragRef.current && !running) {
       idleAfterDragRef.current = false;
       setCurrentState("idle");
-      setPetBubble(null);
+      setPetBubble((current) => (current?.source === "reminder" ? current : null));
       return;
     }
 
@@ -779,6 +949,7 @@ function App() {
     setContextMenuOpen(false);
     setSettingsSection("general");
     setSettingsModalPosition(null);
+    settingsReturnBubbleReserveRef.current = bubbleVisible ? petBubbleReserve : 0;
     if (isTauriRuntime) {
       try {
         settingsReturnPositionRef.current = await getCurrentWindow().outerPosition();
@@ -943,8 +1114,29 @@ function App() {
         onContextMenu={openContextMenu}
       >
         {petBubble && (
-          <div className={`pet-bubble tone-${petBubble.tone}`} role="status" aria-live="polite">
-            <strong>{petBubble.label}</strong>
+          <div
+            className={`pet-bubble tone-${petBubble.tone} ${petBubble.dismissible ? "is-dismissible" : ""}`}
+            role="status"
+            aria-live="polite"
+          >
+            <div className="pet-bubble-header">
+              <strong>{petBubble.label}</strong>
+              {petBubble.dismissible && (
+                <button
+                  className="pet-bubble-close"
+                  type="button"
+                  aria-label="关闭状态提示"
+                  title="关闭状态提示"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closePetBubble();
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
             <span>{petBubble.message}</span>
           </div>
         )}
@@ -1000,6 +1192,14 @@ function App() {
               >
                 <Palette size={17} />
                 <span>主题</span>
+              </button>
+              <button
+                className={settingsSection === "reminder" ? "active" : ""}
+                type="button"
+                onClick={() => setSettingsSection("reminder")}
+              >
+                <Bell size={17} />
+                <span>提醒</span>
               </button>
               <button
                 className={settingsSection === "work" ? "active" : ""}
@@ -1188,6 +1388,129 @@ function App() {
                       <Import size={16} />
                     </button>
                   </div>
+                </label>
+              </div>
+            )}
+
+            {settingsSection === "reminder" && (
+              <div className="settings-page">
+                <div className="section-title">
+                  <h2>定时提醒</h2>
+                </div>
+
+                <div className="reminder-card">
+                  <div className="reminder-card-header">
+                    <div>
+                      <strong>下次提醒</strong>
+                      <span>{formatReminderSchedule(nextReminderAt, reminderConfig.enabled)}</span>
+                    </div>
+                    <button className="secondary-button" type="button" onClick={previewReminder}>
+                      <Bell size={15} />
+                      <span>立即测试</span>
+                    </button>
+                  </div>
+                  <p>
+                    当前实现只维护一个下一次触发的定时器，到点后再计算下一次，
+                    日常性能占用几乎可以忽略。
+                  </p>
+                </div>
+
+                <label className="field">
+                  <span>提醒状态</span>
+                  <select
+                    value={reminderConfig.enabled ? "enabled" : "disabled"}
+                    onChange={(event) =>
+                      setReminderConfig((current) => ({
+                        ...current,
+                        enabled: event.currentTarget.value === "enabled",
+                      }))
+                    }
+                  >
+                    <option value="disabled">关闭</option>
+                    <option value="enabled">开启</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>提醒标题</span>
+                  <input
+                    value={reminderConfig.title}
+                    maxLength={16}
+                    onChange={(event) =>
+                      setReminderConfig((current) => ({
+                        ...current,
+                        title: event.currentTarget.value,
+                      }))
+                    }
+                    placeholder="例如：周报提醒"
+                  />
+                </label>
+
+                <label className="field">
+                  <span>提醒内容</span>
+                  <textarea
+                    value={reminderConfig.message}
+                    rows={3}
+                    onChange={(event) =>
+                      setReminderConfig((current) => ({
+                        ...current,
+                        message: event.currentTarget.value,
+                      }))
+                    }
+                    placeholder="例如：老大，该写周报了。"
+                  />
+                </label>
+
+                <div className="reminder-grid">
+                  <label className="field">
+                    <span>提醒日期</span>
+                    <select
+                      value={String(reminderConfig.weekday)}
+                      onChange={(event) =>
+                        setReminderConfig((current) => ({
+                          ...current,
+                          weekday: clampReminderWeekday(Number(event.currentTarget.value)),
+                        }))
+                      }
+                    >
+                      {reminderWeekdayOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="field">
+                    <span>提醒时间</span>
+                    <input
+                      type="time"
+                      value={reminderConfig.time}
+                      onChange={(event) =>
+                        setReminderConfig((current) => ({
+                          ...current,
+                          time: normalizeReminderTime(event.currentTarget.value),
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+
+                <label className="field">
+                  <span>提醒时长（分钟）</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max={String(maxReminderDurationMinutes)}
+                    value={reminderConfig.durationMinutes}
+                    onChange={(event) =>
+                      setReminderConfig((current) => ({
+                        ...current,
+                        durationMinutes: clampReminderDuration(Number(event.currentTarget.value)),
+                      }))
+                    }
+                  />
+                  <small className="field-hint">填 0 表示持续显示，直到手动关闭。</small>
                 </label>
               </div>
             )}
@@ -1403,6 +1726,7 @@ async function resizeWindow(
   returnPosition: PhysicalPosition | null,
   bubbleReserve: number,
   previousBubbleReserve: number,
+  returnBubbleReserve: number,
 ) {
   if (!isTauriRuntime) {
     return;
@@ -1410,8 +1734,14 @@ async function resizeWindow(
 
   const appWindow = getCurrentWindow();
   if (settingsOpen) {
-    await appWindow.setSize(new LogicalSize(settingsWidth, settingsHeight));
-    await appWindow.center();
+    const settingsSize = settingsWindowSize(petSize);
+    await appWindow.setSize(new LogicalSize(settingsSize.width, settingsSize.height));
+    if (returnPosition) {
+      const nextPosition = await anchoredSettingsWindowPosition(returnPosition, petSize, returnBubbleReserve);
+      await appWindow.setPosition(nextPosition);
+    } else {
+      await appWindow.center();
+    }
     return;
   }
 
@@ -1444,6 +1774,42 @@ function modalViewportBounds(width: number, height: number): DragBounds {
     maxX: Math.max(minX, window.innerWidth - width - minX),
     maxY: Math.max(minY, window.innerHeight - height - minY),
   };
+}
+
+function settingsWindowSize(petSize: number) {
+  const petWindowWidth = petSize + windowPadding;
+  const petWindowHeight = petSize + windowPadding + petBubbleReserve;
+  return {
+    width: settingsWidth + petWindowWidth + settingsPreviewGap,
+    height: Math.max(settingsHeight, petWindowHeight),
+  };
+}
+
+async function anchoredSettingsWindowPosition(
+  returnPosition: PhysicalPosition,
+  petSize: number,
+  bubbleReserve: number,
+) {
+  const compactWidth = petSize + windowPadding;
+  const compactHeight = petSize + windowPadding + bubbleReserve;
+  const expandedSize = settingsWindowSize(petSize);
+  const monitor = await currentMonitor().then((value) => value ?? primaryMonitor());
+  const rawX = returnPosition.x + compactWidth - expandedSize.width;
+  const rawY = returnPosition.y + compactHeight - expandedSize.height;
+
+  if (!monitor) {
+    return new PhysicalPosition(rawX, rawY);
+  }
+
+  const minX = monitor.workArea.position.x;
+  const minY = monitor.workArea.position.y;
+  const maxX = Math.max(minX, minX + monitor.workArea.size.width - expandedSize.width);
+  const maxY = Math.max(minY, minY + monitor.workArea.size.height - expandedSize.height);
+
+  return new PhysicalPosition(
+    clamp(rawX, minX, maxX),
+    clamp(rawY, minY, maxY),
+  );
 }
 
 async function modalMonitorBounds(width: number, height: number): Promise<DragBounds> {
@@ -1559,6 +1925,109 @@ function formatResetTime(value: number | null | undefined) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatReminderSchedule(timestamp: number | null, enabled: boolean) {
+  if (!enabled) {
+    return "未启用";
+  }
+  if (timestamp === null) {
+    return "请完善提醒时间";
+  }
+
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "请完善提醒时间";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function readReminderConfig(): ReminderConfig {
+  const stored = localStorage.getItem(reminderConfigKey);
+  if (!stored) {
+    return defaultReminderConfig;
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as Partial<ReminderConfig>;
+    return {
+      enabled: Boolean(parsed.enabled),
+      title: typeof parsed.title === "string" ? parsed.title : defaultReminderConfig.title,
+      message: typeof parsed.message === "string" ? parsed.message : defaultReminderConfig.message,
+      weekday: clampReminderWeekday(Number(parsed.weekday)),
+      time: normalizeReminderTime(typeof parsed.time === "string" ? parsed.time : defaultReminderConfig.time),
+      durationMinutes: clampReminderDuration(Number(parsed.durationMinutes)),
+    };
+  } catch {
+    return defaultReminderConfig;
+  }
+}
+
+function nextReminderDate(config: ReminderConfig, now = new Date()) {
+  if (!config.enabled) {
+    return null;
+  }
+
+  const [hour, minute] = parseReminderTime(config.time);
+  if (hour === null || minute === null) {
+    return null;
+  }
+
+  const next = new Date(now);
+  next.setSeconds(0, 0);
+  next.setHours(hour, minute, 0, 0);
+
+  const daysUntil = (config.weekday - now.getDay() + 7) % 7;
+  next.setDate(now.getDate() + daysUntil);
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 7);
+  }
+
+  return next;
+}
+
+function parseReminderTime(value: string): [number | null, number | null] {
+  const match = /^(\d{2}):(\d{2})$/.exec(value.trim());
+  if (!match) {
+    return [null, null];
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return [null, null];
+  }
+
+  return [hour, minute];
+}
+
+function normalizeReminderTime(value: string) {
+  const [hour, minute] = parseReminderTime(value);
+  if (hour === null || minute === null) {
+    return defaultReminderConfig.time;
+  }
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function clampReminderDuration(value: number) {
+  if (!Number.isFinite(value)) {
+    return defaultReminderConfig.durationMinutes;
+  }
+
+  return clamp(Math.round(value), 0, maxReminderDurationMinutes);
+}
+
+function clampReminderWeekday(value: number) {
+  const rounded = Math.round(value);
+  return reminderWeekdayOptions.some((option) => option.value === rounded) ? rounded : defaultReminderConfig.weekday;
 }
 
 function readPetSize() {

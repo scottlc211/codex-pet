@@ -54,8 +54,8 @@ button {
 
 .pet-shell.has-settings .pet-stage {
   position: fixed;
-  right: 18px;
-  bottom: 18px;
+  right: 24px;
+  bottom: 24px;
   z-index: 25;
 }
 
@@ -84,7 +84,7 @@ button {
   min-height: 46px;
   padding: 8px 11px 9px;
   display: grid;
-  gap: 2px;
+  gap: 4px;
   border: 1px solid rgba(15, 59, 58, 0.13);
   border-radius: 8px;
   color: #10201f;
@@ -94,23 +94,40 @@ button {
   pointer-events: none;
 }
 
-.pet-bubble::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -7px;
-  width: 12px;
-  height: 12px;
-  border-right: 1px solid rgba(15, 59, 58, 0.13);
-  border-bottom: 1px solid rgba(15, 59, 58, 0.13);
-  background: inherit;
-  transform: translateX(-50%) rotate(45deg);
+.pet-bubble.is-dismissible {
+  pointer-events: auto;
+}
+
+.pet-bubble-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .pet-bubble strong {
   color: #0f3b3a;
   font-size: 11px;
   line-height: 1.2;
+}
+
+.pet-bubble-close {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  color: #5f7672;
+  background: transparent;
+}
+
+.pet-bubble-close:hover {
+  color: #10201f;
+  background: rgba(15, 59, 58, 0.08);
 }
 
 .pet-bubble span {
@@ -136,6 +153,11 @@ button {
 .pet-bubble.tone-error {
   border-color: rgba(217, 45, 32, 0.22);
   background: rgba(255, 245, 243, 0.97);
+}
+
+.pet-bubble.tone-reminder {
+  border-color: rgba(139, 92, 246, 0.22);
+  background: rgba(246, 242, 255, 0.97);
 }
 
 .pet-visual-frame {
@@ -286,6 +308,12 @@ button {
     inset 0 1px 0 rgba(255, 255, 255, 0.75);
   transform: translate(-50%, -50%);
   backdrop-filter: blur(18px);
+}
+
+.pet-shell.has-settings .settings-modal {
+  left: 16px;
+  top: 16px;
+  transform: none;
 }
 
 .settings-drag-handle {
@@ -701,6 +729,53 @@ h1 {
   font-weight: 750;
 }
 
+.field-hint {
+  color: #6a7f7b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.reminder-card {
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(139, 92, 246, 0.16);
+  border-radius: 8px;
+  background: rgba(250, 247, 255, 0.94);
+}
+
+.reminder-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reminder-card-header > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.reminder-card-header strong {
+  color: #10201f;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.reminder-card-header span {
+  color: #6b5aa6;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reminder-card p {
+  margin: 0;
+  color: #5d5d72;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .path-row {
   display: grid;
   grid-template-columns: 1fr 32px;
@@ -726,6 +801,12 @@ h1 {
 .split-row {
   display: grid;
   grid-template-columns: 1fr 116px;
+  gap: 10px;
+}
+
+.reminder-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
