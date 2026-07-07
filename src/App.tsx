@@ -148,6 +148,7 @@ type CodexUsageLimits = {
 
 const packagePathKey = "codex-pet:package-path";
 const workdirKey = "codex-pet:workdir";
+const codexPathKey = "codex-pet:codex-path";
 const petSizeKey = "codex-pet:pet-size";
 const petOffsetXKey = "codex-pet:pet-offset-x";
 const petOffsetYKey = "codex-pet:pet-offset-y";
@@ -211,6 +212,7 @@ const activeTaskStates = new Set<PetState>(["thinking", "working", "running_comm
 function App() {
   const [packagePath, setPackagePath] = useState(() => localStorage.getItem(packagePathKey) ?? "");
   const [workdir, setWorkdir] = useState(() => localStorage.getItem(workdirKey) ?? "");
+  const [codexPath, setCodexPath] = useState(() => localStorage.getItem(codexPathKey) ?? "");
   const [petSize, setPetSize] = useState(() => readPetSize());
   const [petOffsetX, setPetOffsetX] = useState(() => readPetOffset(petOffsetXKey, defaultPetVisualOffsetX));
   const [petOffsetY, setPetOffsetY] = useState(() => readPetOffset(petOffsetYKey, defaultPetVisualOffsetY));
@@ -369,6 +371,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem(terminalKey, terminalId);
   }, [terminalId]);
+
+  useEffect(() => {
+    if (codexPath) {
+      localStorage.setItem(codexPathKey, codexPath);
+    } else {
+      localStorage.removeItem(codexPathKey);
+    }
+  }, [codexPath]);
 
   useEffect(() => {
     if (settingsOpen) {
@@ -610,7 +620,9 @@ function App() {
 
     setCodexUsageLoading(true);
     try {
-      const limits = await invoke<CodexUsageLimits>("get_codex_usage_limits");
+      const limits = await invoke<CodexUsageLimits>("get_codex_usage_limits", {
+        codexPath: codexPath.trim() || null,
+      });
       setCodexUsage(limits);
     } catch (error) {
       setCodexUsage(unavailableCodexUsage(String(error)));
@@ -674,6 +686,7 @@ function App() {
       await invoke("run_codex_task", {
         prompt: task,
         cwd: workdir || null,
+        codexPath: codexPath.trim() || null,
       });
       setTask("");
     } catch (error) {
@@ -1029,6 +1042,29 @@ function App() {
     } catch (error) {
       setCurrentState("error");
       pushEvent({ kind: "path.select.error", message: String(error), state: "error" });
+      scheduleIdle();
+    }
+  }
+
+  async function pickCodexExecutable() {
+    if (!isTauriRuntime) {
+      pushEvent({ kind: "browser", message: "浏览器预览不支持选择 Codex 路径", state: "idle" });
+      return;
+    }
+
+    try {
+      const selected = await open({
+        title: "选择 Codex 可执行文件",
+        directory: false,
+        multiple: false,
+      });
+      if (selected) {
+        setCodexPath(selected);
+        pushEvent({ kind: "codex.path.selected", message: `已选择 Codex：${selected}`, state: "idle" });
+      }
+    } catch (error) {
+      setCurrentState("error");
+      pushEvent({ kind: "codex.path.error", message: String(error), state: "error" });
       scheduleIdle();
     }
   }
@@ -1520,6 +1556,26 @@ function App() {
                 <div className="section-title">
                   <h2>工作任务</h2>
                 </div>
+                <label className="field">
+                  <span>Codex CLI 路径</span>
+                  <div className="work-path-row">
+                    <input
+                      value={codexPath}
+                      onChange={(event) => setCodexPath(event.currentTarget.value)}
+                      placeholder="留空自动查找，例如 C:\\Program Files\\nodejs\\codex.cmd"
+                    />
+                    <button className="icon-button" type="button" title="选择 Codex 可执行文件" onClick={pickCodexExecutable}>
+                      <FileSearch size={16} />
+                    </button>
+                    <button className="icon-button" type="button" title="清空 Codex 路径" onClick={() => setCodexPath("")}>
+                      <X size={16} />
+                    </button>
+                  </div>
+                  <small className="field-hint">
+                    建议留空自动查找；如果读取额度失败，再指定绝对路径，例如 `codex.cmd`。
+                  </small>
+                </label>
+
                 <label className="field">
                   <span>工作路径</span>
                   <div className="work-path-row">

@@ -175,18 +175,36 @@ fn start_codex_session_monitor(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn run_codex_task(app: AppHandle, prompt: String, cwd: Option<String>) -> Result<(), String> {
+fn run_codex_task(
+    app: AppHandle,
+    prompt: String,
+    cwd: Option<String>,
+    codex_path: Option<String>,
+) -> Result<(), String> {
     let prompt = prompt.trim().to_string();
     if prompt.is_empty() {
         return Err("任务内容不能为空".to_string());
     }
 
     let cwd = resolve_work_path(cwd)?;
+    let codex_path = codex_path.clone();
 
     thread::spawn(move || {
         emit_codex_event(&app, "started", "Codex CLI 已启动", Some("thinking"), None);
 
-        let mut command = Command::new("codex");
+        let mut command = match new_codex_command(codex_path) {
+            Ok(command) => command,
+            Err(error) => {
+                emit_codex_event(
+                    &app,
+                    "error",
+                    &format!("无法启动 codex：{error}"),
+                    Some("error"),
+                    None,
+                );
+                return;
+            }
+        };
         command.arg("exec").arg("--json");
         if !has_git_root(&cwd) {
             command.arg("--skip-git-repo-check");
@@ -280,8 +298,8 @@ fn list_terminals() -> Vec<TerminalOption> {
 }
 
 #[tauri::command]
-fn get_codex_usage_limits() -> CodexUsageLimits {
-    read_codex_usage_limits().unwrap_or_else(CodexUsageLimits::unavailable)
+fn get_codex_usage_limits(codex_path: Option<String>) -> CodexUsageLimits {
+    read_codex_usage_limits(codex_path).unwrap_or_else(CodexUsageLimits::unavailable)
 }
 
 fn emit_codex_event(
@@ -381,13 +399,135 @@ impl CodexUsageLimit {
     }
 }
 
-fn read_codex_usage_limits() -> Result<CodexUsageLimits, String> {
-    let result = request_codex_rate_limits()?;
+fn read_codex_usage_limits(codex_path: Option<String>) -> Result<CodexUsageLimits, String> {
+    let result = request_codex_rate_limits(codex_path)?;
     parse_codex_usage_limits(&result)
 }
 
-fn request_codex_rate_limits() -> Result<Value, String> {
-    let mut child = Command::new("codex")
+fn new_codex_command(codex_path: Option<String>) -> Result<Command, String> {
+    let executable = resolve_codex_executable(codex_path)?;
+    Ok(command_for_executable(&executable))
+}
+
+fn resolve_codex_executable(codex_path: Option<String>) -> Result<PathBuf, String> {
+    if let Some(configured_path) = normalize_optional_text(codex_path) {
+        return resolve_configured_codex_executable(&configured_path);
+    }
+
+    auto_detect_codex_executable().ok_or_else(|| {
+        "未找到 Codex CLI，请在设置中填写 Codex CLI 路径，例如 C:\\Program Files\\nodejs\\codex.cmd".to_string()
+    })
+}
+
+fn resolve_configured_codex_executable(value: &str) -> Result<PathBuf, String> {
+    let looks_like_path = value.contains(std::path::MAIN_SEPARATOR)
+        || value.contains('/')
+        || value.contains('\\')
+        || Path::new(value).is_absolute();
+    if !looks_like_path {
+        return auto_detect_named_executable(value)
+            .ok_or_else(|| format!("未找到配置的 Codex 命令：{value}"));
+    }
+
+    let path = clean_user_path(value);
+    if !path.exists() {
+        return Err(format!("配置的 Codex 路径不存在：{}", path.display()));
+    }
+    if !path.is_file() {
+        return Err(format!("配置的 Codex 路径不是文件：{}", path.display()));
+    }
+
+    path.canonicalize()
+        .or_else(|_| Ok(path))
+        .map_err(|error: std::io::Error| format!("解析 Codex 路径失败：{error}"))
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "windows")]
+fn command_for_executable(executable: &Path) -> Command {
+    let is_cmd_script = executable
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("cmd") || value.eq_ignore_ascii_case("bat"))
+        .unwrap_or(false);
+    if is_cmd_script {
+        let mut command = Command::new("cmd");
+        command.arg("/C").arg(executable);
+        return command;
+    }
+
+    Command::new(executable)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn command_for_executable(executable: &Path) -> Command {
+    Command::new(executable)
+}
+
+#[cfg(target_os = "windows")]
+fn auto_detect_codex_executable() -> Option<PathBuf> {
+    auto_detect_named_executable("codex").or_else(|| {
+        let mut candidates = Vec::new();
+        if let Some(program_files) = env::var_os("ProgramFiles") {
+            let base = PathBuf::from(program_files).join("nodejs");
+            candidates.push(base.join("codex.cmd"));
+            candidates.push(base.join("codex.exe"));
+            candidates.push(base.join("codex"));
+        }
+        if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
+            let base = PathBuf::from(program_files_x86).join("nodejs");
+            candidates.push(base.join("codex.cmd"));
+            candidates.push(base.join("codex.exe"));
+            candidates.push(base.join("codex"));
+        }
+        if let Some(nvm_symlink) = env::var_os("NVM_SYMLINK") {
+            let base = PathBuf::from(nvm_symlink);
+            candidates.push(base.join("codex.cmd"));
+            candidates.push(base.join("codex.exe"));
+            candidates.push(base.join("codex"));
+        }
+        if let Some(home) = home_dir() {
+            let base = home.join(".local").join("bin");
+            candidates.push(base.join("codex"));
+            candidates.push(base.join("codex.cmd"));
+        }
+        candidates.into_iter().find(|path| path.is_file())
+    })
+}
+
+#[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
+fn auto_detect_codex_executable() -> Option<PathBuf> {
+    auto_detect_named_executable("codex").or_else(|| {
+        home_dir()
+            .map(|home| home.join(".local").join("bin").join("codex"))
+            .filter(|path| path.is_file())
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn auto_detect_named_executable(command: &str) -> Option<PathBuf> {
+    find_windows_executable(command).or_else(|| {
+        let with_cmd = format!("{command}.cmd");
+        find_windows_executable(&with_cmd)
+    }).or_else(|| {
+        let with_exe = format!("{command}.exe");
+        find_windows_executable(&with_exe)
+    })
+}
+
+#[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
+fn auto_detect_named_executable(command: &str) -> Option<PathBuf> {
+    find_unix_executable(command)
+}
+
+fn request_codex_rate_limits(codex_path: Option<String>) -> Result<Value, String> {
+    let mut child = new_codex_command(codex_path)
+        .map_err(|error| format!("无法启动 Codex app-server：{error}"))?
         .arg("app-server")
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -1579,14 +1719,25 @@ fn find_git_bash() -> Option<PathBuf> {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn unix_command_exists(command: &str) -> bool {
-    Command::new("sh")
+    find_unix_executable(command).is_some()
+}
+
+#[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
+fn find_unix_executable(command: &str) -> Option<PathBuf> {
+    let output = Command::new("sh")
         .arg("-lc")
         .arg(format!("command -v {command}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
