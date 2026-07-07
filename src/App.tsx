@@ -203,6 +203,7 @@ function App() {
   const [petOffsetY, setPetOffsetY] = useState(() => readPetOffset(petOffsetYKey, defaultPetVisualOffsetY));
   const [renderMode, setRenderMode] = useState<RenderMode>(() => readRenderMode());
   const [reminderConfig, setReminderConfig] = useState<ReminderConfig>(() => readReminderConfig());
+  const [reminderDraft, setReminderDraft] = useState<ReminderConfig>(() => reminderConfig);
   const [terminalId, setTerminalId] = useState(() => localStorage.getItem(terminalKey) ?? autoTerminal.id);
   const [terminals, setTerminals] = useState<TerminalOption[]>([autoTerminal]);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
@@ -361,6 +362,21 @@ function App() {
   }, [reminderConfig]);
 
   useEffect(() => {
+    if (!settingsOpen || !isTauriRuntime) {
+      return;
+    }
+
+    const appWindow = getCurrentWindow();
+    void Promise.allSettled([
+      appWindow.setIgnoreCursorEvents(false),
+      appWindow.setAlwaysOnBottom(false),
+      appWindow.setAlwaysOnTop(true),
+    ]);
+    windowAlwaysOnBottomRef.current = false;
+    windowAlwaysOnTopRef.current = true;
+  }, [settingsOpen, reminderConfig]);
+
+  useEffect(() => {
     localStorage.setItem(terminalKey, terminalId);
   }, [terminalId]);
 
@@ -460,7 +476,7 @@ function App() {
           await setWindowLayer(true, false);
         } else if (settingsOpen) {
           await setIgnoreCursorEvents(false);
-          await setWindowLayer(false, false);
+          await setWindowLayer(true, false);
         } else if (contextMenuOpen) {
           await setIgnoreCursorEvents(false);
           await setWindowLayer(true, false);
@@ -502,7 +518,7 @@ function App() {
     void updateCursorHitArea();
     const unlistenFocusPromise = appWindow.onFocusChanged(({ payload: focused }) => {
       if (settingsOpen) {
-        void setWindowLayer(false, false);
+        void setWindowLayer(true, false);
       } else if (focused) {
         void setWindowLayer(true, false);
       }
@@ -701,7 +717,18 @@ function App() {
   }
 
   function previewReminder() {
-    triggerReminderBubble(reminderConfig);
+    triggerReminderBubble(normalizeReminderConfig(reminderDraft));
+  }
+
+  function saveReminderConfig() {
+    const nextConfig = normalizeReminderConfig(reminderDraft);
+    setReminderDraft(nextConfig);
+    setReminderConfig(nextConfig);
+    pushEvent({ kind: "reminder.saved", message: "定时提醒配置已保存", state: "idle" });
+  }
+
+  function resetReminderDraft() {
+    setReminderDraft(reminderConfig);
   }
 
   function updatePetBubble(state: PetState, message: string) {
@@ -903,6 +930,7 @@ function App() {
     setContextMenuOpen(false);
     setSettingsSection("general");
     setSettingsModalPosition(null);
+    setReminderDraft(reminderConfig);
     settingsReturnBubbleReserveRef.current = bubbleVisible ? petBubbleReserve : 0;
     if (isTauriRuntime) {
       try {
@@ -1335,8 +1363,17 @@ function App() {
 
             {settingsSection === "reminder" && (
               <div className="settings-page">
-                <div className="section-title">
+                <div className="section-title with-action">
                   <h2>定时提醒</h2>
+                  <div className="reminder-actions">
+                    <button className="icon-button" type="button" title="还原提醒配置" onClick={resetReminderDraft}>
+                      <RefreshCw size={16} />
+                    </button>
+                    <button className="secondary-button" type="button" onClick={saveReminderConfig}>
+                      <Check size={15} />
+                      <span>保存</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="reminder-card">
@@ -1359,9 +1396,9 @@ function App() {
                 <label className="field">
                   <span>提醒状态</span>
                   <select
-                    value={reminderConfig.enabled ? "enabled" : "disabled"}
+                    value={reminderDraft.enabled ? "enabled" : "disabled"}
                     onChange={(event) =>
-                      setReminderConfig((current) => ({
+                      setReminderDraft((current) => ({
                         ...current,
                         enabled: event.currentTarget.value === "enabled",
                       }))
@@ -1375,10 +1412,10 @@ function App() {
                 <label className="field">
                   <span>提醒标题</span>
                   <input
-                    value={reminderConfig.title}
+                    value={reminderDraft.title}
                     maxLength={16}
                     onChange={(event) =>
-                      setReminderConfig((current) => ({
+                      setReminderDraft((current) => ({
                         ...current,
                         title: event.currentTarget.value,
                       }))
@@ -1390,10 +1427,10 @@ function App() {
                 <label className="field">
                   <span>提醒内容</span>
                   <textarea
-                    value={reminderConfig.message}
+                    value={reminderDraft.message}
                     rows={3}
                     onChange={(event) =>
-                      setReminderConfig((current) => ({
+                      setReminderDraft((current) => ({
                         ...current,
                         message: event.currentTarget.value,
                       }))
@@ -1406,9 +1443,9 @@ function App() {
                   <label className="field">
                     <span>提醒日期</span>
                     <select
-                      value={String(reminderConfig.weekday)}
+                      value={String(reminderDraft.weekday)}
                       onChange={(event) =>
-                        setReminderConfig((current) => ({
+                        setReminderDraft((current) => ({
                           ...current,
                           weekday: clampReminderWeekday(Number(event.currentTarget.value)),
                         }))
@@ -1426,9 +1463,9 @@ function App() {
                     <span>提醒时间</span>
                     <input
                       type="time"
-                      value={reminderConfig.time}
+                      value={reminderDraft.time}
                       onChange={(event) =>
-                        setReminderConfig((current) => ({
+                        setReminderDraft((current) => ({
                           ...current,
                           time: normalizeReminderTime(event.currentTarget.value),
                         }))
@@ -1443,9 +1480,9 @@ function App() {
                     type="number"
                     min="0"
                     max={String(maxReminderDurationMinutes)}
-                    value={reminderConfig.durationMinutes}
+                    value={reminderDraft.durationMinutes}
                     onChange={(event) =>
-                      setReminderConfig((current) => ({
+                      setReminderDraft((current) => ({
                         ...current,
                         durationMinutes: clampReminderDuration(Number(event.currentTarget.value)),
                       }))
@@ -1872,17 +1909,21 @@ function readReminderConfig(): ReminderConfig {
 
   try {
     const parsed = JSON.parse(stored) as Partial<ReminderConfig>;
-    return {
-      enabled: Boolean(parsed.enabled),
-      title: typeof parsed.title === "string" ? parsed.title : defaultReminderConfig.title,
-      message: typeof parsed.message === "string" ? parsed.message : defaultReminderConfig.message,
-      weekday: clampReminderWeekday(Number(parsed.weekday)),
-      time: normalizeReminderTime(typeof parsed.time === "string" ? parsed.time : defaultReminderConfig.time),
-      durationMinutes: clampReminderDuration(Number(parsed.durationMinutes)),
-    };
+    return normalizeReminderConfig(parsed);
   } catch {
     return defaultReminderConfig;
   }
+}
+
+function normalizeReminderConfig(config: Partial<ReminderConfig>): ReminderConfig {
+  return {
+    enabled: Boolean(config.enabled),
+    title: typeof config.title === "string" ? config.title : defaultReminderConfig.title,
+    message: typeof config.message === "string" ? config.message : defaultReminderConfig.message,
+    weekday: clampReminderWeekday(Number(config.weekday)),
+    time: normalizeReminderTime(typeof config.time === "string" ? config.time : defaultReminderConfig.time),
+    durationMinutes: clampReminderDuration(Number(config.durationMinutes)),
+  };
 }
 
 function nextReminderDate(config: ReminderConfig, now = new Date()) {

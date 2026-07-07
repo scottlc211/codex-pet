@@ -775,6 +775,12 @@ h1 {
   line-height: 1.45;
 }
 
+.reminder-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .path-row {
   display: grid;
   grid-template-columns: 1fr 32px;
