@@ -77,6 +77,15 @@ button {
   cursor: grabbing;
 }
 
+.pet-visual-frame {
+  width: var(--pet-size);
+  height: var(--pet-size);
+  display: grid;
+  place-items: center;
+  transform: translate(var(--pet-visual-offset-x, 0), var(--pet-visual-offset-y, 0));
+  pointer-events: none;
+}
+
 .pet-image,
 .pet-atlas-wrap {
   width: var(--pet-size);

@@ -125,6 +125,8 @@ const themePreviewPetSize = 112;
 const themePreviewCanvasSize = 156;
 const petCanvasPadding = 48;
 const windowPadding = petCanvasPadding + 24;
+const petVisualOffsetX = -24;
+const petVisualOffsetY = -28;
 const petHitWidthRatio = 0.82;
 const petHitHeightRatio = 0.92;
 const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
@@ -187,6 +189,8 @@ function App() {
   const shellStyle = {
     "--pet-size": `${petSize}px`,
     "--pet-canvas-size": `${petSize + petCanvasPadding}px`,
+    "--pet-visual-offset-x": `${petVisualOffsetX}px`,
+    "--pet-visual-offset-y": `${petVisualOffsetY}px`,
   } as CSSProperties;
   const settingsModalStyle = settingsModalPosition
     ? ({
@@ -198,6 +202,8 @@ function App() {
   const themePreviewStyle = {
     "--pet-size": `${themePreviewPetSize}px`,
     "--pet-canvas-size": `${themePreviewCanvasSize}px`,
+    "--pet-visual-offset-x": "0px",
+    "--pet-visual-offset-y": "0px",
   } as CSSProperties;
 
   useEffect(() => {
@@ -1027,7 +1033,11 @@ function PetVisualView({
   petSize: number;
 }) {
   if (!visual) {
-    return <img className="pet-image" src={defaultPet} alt="Codex Pet" draggable={false} />;
+    return (
+      <div className="pet-visual-frame">
+        <img className="pet-image" src={defaultPet} alt="Codex Pet" draggable={false} />
+      </div>
+    );
   }
 
   if (visual.kind === "atlas") {
@@ -1052,25 +1062,29 @@ function PetVisualView({
     const visualKey = `${visual.path}-${state}-${row}-${frames}-${totalMs}-${frameWidth}x${frameHeight}`;
 
     return (
-      <div
-        key={visualKey}
-        className={`pet-atlas-wrap render-${renderMode}`}
-        style={style}
-        aria-label={`宠物状态 ${state}`}
-      >
-        <div className="pet-atlas" key={visualKey} />
+      <div className="pet-visual-frame">
+        <div
+          key={visualKey}
+          className={`pet-atlas-wrap render-${renderMode}`}
+          style={style}
+          aria-label={`宠物状态 ${state}`}
+        >
+          <div className="pet-atlas" key={visualKey} />
+        </div>
       </div>
     );
   }
 
   return (
-    <img
-      key={`${visual.path}-${state}`}
-      className={`pet-image render-${renderMode}`}
-      src={isTauriRuntime ? convertFileSrc(visual.path) : defaultPet}
-      alt={`宠物状态 ${state}`}
-      draggable={false}
-    />
+    <div className="pet-visual-frame">
+      <img
+        key={`${visual.path}-${state}`}
+        className={`pet-image render-${renderMode}`}
+        src={isTauriRuntime ? convertFileSrc(visual.path) : defaultPet}
+        alt={`宠物状态 ${state}`}
+        draggable={false}
+      />
+    </div>
   );
 }
 
