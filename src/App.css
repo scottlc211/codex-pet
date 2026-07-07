@@ -63,8 +63,8 @@ button {
 
 .pet-stage {
   position: relative;
-  width: var(--pet-size);
-  height: var(--pet-size);
+  width: var(--pet-canvas-size);
+  height: var(--pet-canvas-size);
   display: grid;
   place-items: center;
   overflow: visible;

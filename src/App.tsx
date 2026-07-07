@@ -122,10 +122,10 @@ const settingsWidth = 980;
 const settingsHeight = 640;
 const themePreviewPetSize = 112;
 const themePreviewCanvasSize = 156;
-const petCanvasPadding = 0;
-const windowPadding = 24;
-const cursorHotInsetRatioX = 0.12;
-const cursorHotInsetRatioY = 0.08;
+const petCanvasPadding = 48;
+const windowPadding = petCanvasPadding + 24;
+const petHitWidthRatio = 0.82;
+const petHitHeightRatio = 0.92;
 const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
 const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -289,7 +289,26 @@ function App() {
       }
 
       try {
-        if (settingsOpen || contextMenuOpen || isDragging()) {
+        if (isDragging() || modalDragRef.current) {
+          await setIgnoreCursorEvents(false);
+        } else if (settingsOpen) {
+          const [cursor, position, scaleFactor] = await Promise.all([
+            cursorPosition(),
+            appWindow.outerPosition(),
+            appWindow.scaleFactor(),
+          ]);
+          const modal = document.querySelector<HTMLElement>(".settings-modal");
+          const relativeX = (cursor.x - position.x) / scaleFactor;
+          const relativeY = (cursor.y - position.y) / scaleFactor;
+          const modalRect = modal?.getBoundingClientRect();
+          const insideModal =
+            modalRect !== undefined &&
+            relativeX >= modalRect.left &&
+            relativeX <= modalRect.right &&
+            relativeY >= modalRect.top &&
+            relativeY <= modalRect.bottom;
+          await setIgnoreCursorEvents(!insideModal);
+        } else if (contextMenuOpen) {
           await setIgnoreCursorEvents(false);
         } else {
           const [cursor, position, size] = await Promise.all([
@@ -297,8 +316,10 @@ function App() {
             appWindow.outerPosition(),
             appWindow.outerSize(),
           ]);
-          const insetX = Math.max(6, Math.round(size.width * cursorHotInsetRatioX));
-          const insetY = Math.max(6, Math.round(size.height * cursorHotInsetRatioY));
+          const hitWidth = Math.min(size.width, Math.max(24, Math.round(petSize * petHitWidthRatio)));
+          const hitHeight = Math.min(size.height, Math.max(24, Math.round(petSize * petHitHeightRatio)));
+          const insetX = Math.max(0, Math.round((size.width - hitWidth) / 2));
+          const insetY = Math.max(0, Math.round((size.height - hitHeight) / 2));
           const insideHotArea =
             cursor.x >= position.x + insetX &&
             cursor.x <= position.x + size.width - insetX &&
@@ -1115,15 +1136,26 @@ async function resizeWindow(settingsOpen: boolean, petSize: number, returnPositi
     return;
   }
 
-  const size = settingsOpen
-    ? new LogicalSize(settingsWidth, settingsHeight)
-    : new LogicalSize(petSize + windowPadding, petSize + windowPadding);
-
   const appWindow = getCurrentWindow();
-  await appWindow.setSize(size);
   if (settingsOpen) {
-    await appWindow.center();
-  } else if (returnPosition) {
+    const monitor = await currentMonitor().then((value) => value ?? primaryMonitor());
+    if (monitor) {
+      await appWindow.setPosition(monitor.position);
+      await appWindow.setSize(
+        new LogicalSize(
+          monitor.size.width / monitor.scaleFactor,
+          monitor.size.height / monitor.scaleFactor,
+        ),
+      );
+    } else {
+      await appWindow.setSize(new LogicalSize(settingsWidth, settingsHeight));
+      await appWindow.center();
+    }
+    return;
+  }
+
+  await appWindow.setSize(new LogicalSize(petSize + windowPadding, petSize + windowPadding));
+  if (returnPosition) {
     await appWindow.setPosition(returnPosition);
   }
 }
@@ -1167,14 +1199,14 @@ async function modalMonitorBounds(width: number, height: number): Promise<DragBo
   }
 
   const margin = 8;
-  const minX = (monitor.workArea.position.x - position.x) / scaleFactor + margin;
-  const minY = (monitor.workArea.position.y - position.y) / scaleFactor + margin;
+  const minX = (monitor.position.x - position.x) / scaleFactor + margin;
+  const minY = (monitor.position.y - position.y) / scaleFactor + margin;
   const maxX =
-    (monitor.workArea.position.x + monitor.workArea.size.width - position.x) / scaleFactor -
+    (monitor.position.x + monitor.size.width - position.x) / scaleFactor -
     width -
     margin;
   const maxY =
-    (monitor.workArea.position.y + monitor.workArea.size.height - position.y) / scaleFactor -
+    (monitor.position.y + monitor.size.height - position.y) / scaleFactor -
     height -
     margin;
 
