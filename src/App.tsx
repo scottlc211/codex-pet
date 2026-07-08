@@ -14,7 +14,6 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   currentMonitor,
-  cursorPosition,
   getCurrentWindow,
   primaryMonitor,
   type Monitor,
@@ -131,6 +130,18 @@ type ReminderConfig = {
   durationMinutes: number;
 };
 
+type ReminderStateSnapshot = {
+  config: ReminderConfig;
+  nextReminderAt: number | null;
+};
+
+type ReminderEvent = {
+  title: string;
+  message: string;
+  durationMinutes: number;
+  nextReminderAt: number | null;
+};
+
 const packagePathKey = "codex-pet:package-path";
 const workdirKey = "codex-pet:workdir";
 const codexPathKey = "codex-pet:codex-path";
@@ -151,8 +162,6 @@ const defaultPetVisualOffsetX = -24;
 const defaultPetVisualOffsetY = -28;
 const petVisualOffsetLimit = 36;
 const petBubbleReserve = 72;
-const petHitWidthRatio = 0.82;
-const petHitHeightRatio = 0.92;
 const settingsPreviewGap = 32;
 const maxReminderDurationMinutes = 24 * 60;
 const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
@@ -278,6 +287,16 @@ function App() {
     void invoke("start_codex_session_monitor").catch((error) => {
       pushEvent({ kind: "monitor.error", message: String(error), state: "error" });
     });
+    void invoke<ReminderStateSnapshot>("get_reminder_state")
+      .then((snapshot) => {
+        const config = normalizeReminderConfig(snapshot.config);
+        setReminderConfig(config);
+        setReminderDraft(config);
+        setNextReminderAt(snapshot.nextReminderAt);
+      })
+      .catch((error) => {
+        pushEvent({ kind: "reminder.load.error", message: String(error), state: "error" });
+      });
     void refreshCandidates();
     void refreshTerminals();
 
@@ -302,9 +321,22 @@ function App() {
 
       }
     });
+    const unlistenReminderPromise = listen<ReminderEvent>("reminder-triggered", (event) => {
+      const reminder = event.payload;
+      triggerReminderBubble({
+        enabled: true,
+        title: reminder.title,
+        message: reminder.message,
+        weekday: defaultReminderConfig.weekday,
+        time: defaultReminderConfig.time,
+        durationMinutes: reminder.durationMinutes,
+      });
+      setNextReminderAt(reminder.nextReminderAt);
+    });
 
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
+      void unlistenReminderPromise.then((unlisten) => unlisten());
       clearIdleTimer();
     };
   }, []);
@@ -358,7 +390,9 @@ function App() {
   }, [renderMode]);
 
   useEffect(() => {
-    localStorage.setItem(reminderConfigKey, JSON.stringify(reminderConfig));
+    if (!isTauriRuntime) {
+      localStorage.setItem(reminderConfigKey, JSON.stringify(reminderConfig));
+    }
   }, [reminderConfig]);
 
   useEffect(() => {
@@ -374,7 +408,7 @@ function App() {
     ]);
     windowAlwaysOnBottomRef.current = false;
     windowAlwaysOnTopRef.current = true;
-  }, [settingsOpen, reminderConfig]);
+  }, [settingsOpen]);
 
   useEffect(() => {
     localStorage.setItem(terminalKey, terminalId);
@@ -389,6 +423,10 @@ function App() {
   }, [codexPath]);
 
   useEffect(() => {
+    if (isTauriRuntime) {
+      return;
+    }
+
     scheduleNextReminder();
 
     return () => {
@@ -481,29 +519,7 @@ function App() {
           await setIgnoreCursorEvents(false);
           await setWindowLayer(true, false);
         } else {
-          const [cursor, position, size] = await Promise.all([
-            cursorPosition(),
-            appWindow.outerPosition(),
-            appWindow.outerSize(),
-          ]);
-          const hitWidth = Math.min(size.width, Math.max(24, Math.round(petSize * petHitWidthRatio)));
-          const hitHeight = Math.min(size.height, Math.max(24, Math.round(petSize * petHitHeightRatio)));
-          const hitLeft = clamp(
-            Math.round((size.width - hitWidth) / 2 + petOffsetX),
-            0,
-            Math.max(0, size.width - hitWidth),
-          );
-          const hitTop = clamp(
-            Math.round((size.height - hitHeight) / 2 + petOffsetY),
-            0,
-            Math.max(0, size.height - hitHeight),
-          );
-          const insideHotArea =
-            cursor.x >= position.x + hitLeft &&
-            cursor.x <= position.x + hitLeft + hitWidth &&
-            cursor.y >= position.y + hitTop &&
-            cursor.y <= position.y + hitTop + hitHeight;
-          await setIgnoreCursorEvents(!insideHotArea);
+          await setIgnoreCursorEvents(false);
           await setWindowLayer(true, false);
         }
       } catch {
@@ -717,14 +733,37 @@ function App() {
   }
 
   function previewReminder() {
-    triggerReminderBubble(normalizeReminderConfig(reminderDraft));
+    const config = normalizeReminderConfig(reminderDraft);
+    if (!isTauriRuntime) {
+      triggerReminderBubble(config);
+      return;
+    }
+
+    void invoke("preview_reminder", { config }).catch((error) => {
+      pushEvent({ kind: "reminder.preview.error", message: String(error), state: "error" });
+    });
   }
 
   function saveReminderConfig() {
     const nextConfig = normalizeReminderConfig(reminderDraft);
-    setReminderDraft(nextConfig);
-    setReminderConfig(nextConfig);
-    pushEvent({ kind: "reminder.saved", message: "定时提醒配置已保存", state: "idle" });
+    if (!isTauriRuntime) {
+      setReminderDraft(nextConfig);
+      setReminderConfig(nextConfig);
+      pushEvent({ kind: "reminder.saved", message: "定时提醒配置已保存", state: "idle" });
+      return;
+    }
+
+    void invoke<ReminderStateSnapshot>("save_reminder_config", { config: nextConfig })
+      .then((snapshot) => {
+        const config = normalizeReminderConfig(snapshot.config);
+        setReminderDraft(config);
+        setReminderConfig(config);
+        setNextReminderAt(snapshot.nextReminderAt);
+        pushEvent({ kind: "reminder.saved", message: "定时提醒配置已保存", state: "idle" });
+      })
+      .catch((error) => {
+        pushEvent({ kind: "reminder.save.error", message: String(error), state: "error" });
+      });
   }
 
   function resetReminderDraft() {
@@ -938,6 +977,7 @@ function App() {
       } catch (error) {
         pushEvent({ kind: "window.position.error", message: String(error), state: "error" });
       }
+      void invoke("restore_main_window").catch(() => undefined);
     }
     setSettingsOpen(true);
   }
@@ -1388,8 +1428,7 @@ function App() {
                     </button>
                   </div>
                   <p>
-                    当前实现只维护一个下一次触发的定时器，到点后再计算下一次，
-                    日常性能占用几乎可以忽略。
+                    后台调度已接管提醒，到点后会发送系统通知并唤起桌宠。
                   </p>
                 </div>
 
