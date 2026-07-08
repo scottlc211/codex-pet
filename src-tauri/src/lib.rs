@@ -18,7 +18,6 @@ use std::{
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use tauri::{
-    plugin::PermissionState,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State,
 };
@@ -1807,12 +1806,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(ReminderManager::new())
         .setup(|app| {
-            if matches!(
-                app.notification().permission_state(),
-                Ok(PermissionState::Unknown)
-            ) {
-                let _ = app.notification().request_permission();
-            }
+            let _ = app.notification().request_permission();
             start_reminder_scheduler(app.handle().clone());
             let _tray = TrayIconBuilder::new()
                 .on_tray_icon_event(|tray, event| {
