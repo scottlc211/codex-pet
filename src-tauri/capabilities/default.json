@@ -4,17 +4,18 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "core:window:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-scale-factor",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-current-monitor",
+    "core:window:allow-primary-monitor",
     "core:window:allow-center",
     "core:window:allow-set-position",
     "core:window:allow-set-size",
-    "core:window:allow-set-always-on-top",
-    "core:window:allow-set-always-on-bottom",
     "core:window:allow-minimize",
     "core:window:allow-close",
-    "dialog:default",
-    "notification:default",
-    "opener:default"
+    "dialog:allow-open"
   ]
 }

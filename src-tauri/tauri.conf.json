@@ -33,12 +33,7 @@
         "enable": true,
         "scope": [
           "$HOME/.codex/pets/**",
-          "$HOME/.codex/**",
-          "$HOME/.codex-pet/**",
-          "$APPDATA/Codex/**",
-          "$APPDATA/codex/**",
-          "D:\\A_STUDY\\codex-pet\\pet-assets\\**",
-          "/mnt/d/A_STUDY/codex-pet/pet-assets/**"
+          "$HOME/.codex-pet/pets/**"
         ]
       }
     }

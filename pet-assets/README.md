@@ -1,5 +1,5 @@
 # Pet Assets
 
-把 `.png`、`.webp`、`.gif`、`.svg`、`.apng` 宠物资源，或带 `pet.json` / `theme.json` 的动画包目录放到这个目录后，运行桌宠里的刷新按钮即可发现。
+这个目录只用于仓库内的资源示例，不再加入桌面应用的本地文件访问范围。
 
-如果你直接输入文件路径，也需要让路径位于 `src-tauri/tauri.conf.json` 的 `assetProtocol.scope` 允许范围内。
+使用设置页导入 `.png`、`.webp`、`.gif`、`.svg`、`.apng`，或带 `pet.json` / `theme.json` 的动画包。应用会把允许的文件复制到 `~/.codex-pet/pets/`，刷新后即可发现。

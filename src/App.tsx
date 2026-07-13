@@ -164,6 +164,8 @@ const petVisualOffsetLimit = 36;
 const petBubbleReserve = 72;
 const settingsPreviewGap = 32;
 const maxReminderDurationMinutes = 24 * 60;
+const maxReminderMessageCharacters = 1000;
+const maxTaskCharacters = 64 * 1024;
 const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
 const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -221,6 +223,7 @@ function App() {
   const [settingsModalPosition, setSettingsModalPosition] = useState<ModalPosition | null>(null);
   const [task, setTask] = useState("");
   const [running, setRunning] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [currentState, setCurrentState] = useState<PetState>("idle");
   const [petBubble, setPetBubble] = useState<PetBubble | null>(null);
   const [activePet, setActivePet] = useState<PetCandidate | null>(null);
@@ -240,8 +243,6 @@ function App() {
   const settingsReturnPositionRef = useRef<PhysicalPosition | null>(null);
   const settingsReturnBubbleReserveRef = useRef(0);
   const windowLayoutKeyRef = useRef("");
-  const windowAlwaysOnTopRef = useRef(true);
-  const windowAlwaysOnBottomRef = useRef(false);
 
   const visual = useMemo(() => {
     if (!activePet) {
@@ -396,21 +397,6 @@ function App() {
   }, [reminderConfig]);
 
   useEffect(() => {
-    if (!settingsOpen || !isTauriRuntime) {
-      return;
-    }
-
-    const appWindow = getCurrentWindow();
-    void Promise.allSettled([
-      appWindow.setIgnoreCursorEvents(false),
-      appWindow.setAlwaysOnBottom(false),
-      appWindow.setAlwaysOnTop(true),
-    ]);
-    windowAlwaysOnBottomRef.current = false;
-    windowAlwaysOnTopRef.current = true;
-  }, [settingsOpen]);
-
-  useEffect(() => {
     localStorage.setItem(terminalKey, terminalId);
   }, [terminalId]);
 
@@ -442,121 +428,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauriRuntime) {
-      return;
-    }
-
-    const appWindow = getCurrentWindow();
-    let disposed = false;
-    let ignoringCursor = false;
-    let layerErrorReported = false;
-    let timer: number | null = null;
-
-    async function setIgnoreCursorEvents(next: boolean) {
-      if (ignoringCursor === next) {
-        return;
-      }
-      ignoringCursor = next;
-      await appWindow.setIgnoreCursorEvents(next);
-    }
-
-    async function setWindowAlwaysOnTop(next: boolean) {
-      if (windowAlwaysOnTopRef.current === next) {
-        return;
-      }
-
-      try {
-        await appWindow.setAlwaysOnTop(next);
-        windowAlwaysOnTopRef.current = next;
-      } catch (error) {
-        if (!layerErrorReported) {
-          layerErrorReported = true;
-          pushEvent({ kind: "window.layer.error", message: String(error), state: "error" });
-        }
-      }
-    }
-
-    async function setWindowAlwaysOnBottom(next: boolean) {
-      if (windowAlwaysOnBottomRef.current === next) {
-        return;
-      }
-
-      try {
-        await appWindow.setAlwaysOnBottom(next);
-        windowAlwaysOnBottomRef.current = next;
-      } catch (error) {
-        if (!layerErrorReported) {
-          layerErrorReported = true;
-          pushEvent({ kind: "window.layer.error", message: String(error), state: "error" });
-        }
-      }
-    }
-
-    async function setWindowLayer(alwaysOnTop: boolean, alwaysOnBottom: boolean) {
-      if (alwaysOnTop) {
-        await setWindowAlwaysOnBottom(false);
-      }
-      if (alwaysOnBottom) {
-        await setWindowAlwaysOnTop(false);
-      }
-      await setWindowAlwaysOnTop(alwaysOnTop);
-      await setWindowAlwaysOnBottom(alwaysOnBottom);
-    }
-
-    async function updateCursorHitArea() {
-      if (disposed) {
-        return;
-      }
-
-      try {
-        if (isDragging() || modalDragRef.current) {
-          await setIgnoreCursorEvents(false);
-          await setWindowLayer(true, false);
-        } else if (settingsOpen) {
-          await setIgnoreCursorEvents(false);
-          await setWindowLayer(true, false);
-        } else if (contextMenuOpen) {
-          await setIgnoreCursorEvents(false);
-          await setWindowLayer(true, false);
-        } else {
-          await setIgnoreCursorEvents(false);
-          await setWindowLayer(true, false);
-        }
-      } catch {
-        await setIgnoreCursorEvents(false).catch(() => undefined);
-      } finally {
-        if (!disposed) {
-          timer = window.setTimeout(updateCursorHitArea, ignoringCursor ? 80 : 140);
-        }
-      }
-    }
-
-    void updateCursorHitArea();
-    const unlistenFocusPromise = appWindow.onFocusChanged(({ payload: focused }) => {
-      if (settingsOpen) {
-        void setWindowLayer(true, false);
-      } else if (focused) {
-        void setWindowLayer(true, false);
-      }
-    });
-
-    return () => {
-      disposed = true;
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
-      void unlistenFocusPromise.then((unlisten) => unlisten());
-      void appWindow.setIgnoreCursorEvents(false).catch(() => undefined);
-      void appWindow.setAlwaysOnBottom(false).then(() => {
-        windowAlwaysOnBottomRef.current = false;
-      }).catch(() => undefined);
-      void appWindow.setAlwaysOnTop(true).then(() => {
-        windowAlwaysOnTopRef.current = true;
-      }).catch(() => undefined);
-    };
-  }, [settingsOpen, contextMenuOpen, petSize, petOffsetX, petOffsetY]);
-
-  useEffect(() => {
     if (packagePath) {
       localStorage.setItem(packagePathKey, packagePath);
     } else {
@@ -578,13 +449,19 @@ function App() {
       return;
     }
 
-    const found = await invoke<PetCandidate[]>("find_pet_candidates");
-    setCandidates(found);
-    if (!activePet && found[0]) {
-      setActivePet(found[0]);
-      setPackagePath(found[0].path);
+    try {
+      const found = await invoke<PetCandidate[]>("find_pet_candidates");
+      setCandidates(found);
+      if (!activePet && found[0]) {
+        setActivePet(found[0]);
+        setPackagePath(found[0].path);
+      }
+      pushEvent({ kind: "scan", message: `发现 ${found.length} 个可用宠物资源`, state: "idle" });
+    } catch (error) {
+      setCurrentState("error");
+      pushEvent({ kind: "scan.error", message: String(error), state: "error" });
+      scheduleIdle();
     }
-    pushEvent({ kind: "scan", message: `发现 ${found.length} 个可用宠物资源`, state: "idle" });
   }
 
   async function refreshTerminals() {
@@ -605,6 +482,9 @@ function App() {
   }
 
   async function importPackage() {
+    if (importing) {
+      return;
+    }
     if (!packagePath.trim()) {
       pushEvent({ kind: "import.empty", message: "先输入动画包目录、zip 或图片路径", state: "waiting_input" });
       setCurrentState("waiting_input");
@@ -616,6 +496,7 @@ function App() {
       return;
     }
 
+    setImporting(true);
     try {
       const imported = await invoke<PetCandidate>("import_pet_package", {
         sourcePath: packagePath,
@@ -632,6 +513,8 @@ function App() {
       setCurrentState("error");
       pushEvent({ kind: "import.error", message: String(error), state: "error" });
       scheduleIdle();
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -1391,10 +1274,16 @@ function App() {
                     <input
                       value={packagePath}
                       onChange={(event) => setPackagePath(event.currentTarget.value)}
-                      placeholder={"D:\\A_STUDY\\codex-pet\\pet-assets\\my-pet.zip"}
+                      placeholder="选择目录、zip 或图片文件"
                     />
-                    <button className="icon-button" type="button" title="导入动画包" onClick={importPackage}>
-                      <Import size={16} />
+                    <button
+                      className="icon-button"
+                      type="button"
+                      title="导入动画包"
+                      disabled={importing}
+                      onClick={importPackage}
+                    >
+                      {importing ? <LoaderCircle className="spin-icon" size={16} /> : <Import size={16} />}
                     </button>
                   </div>
                 </label>
@@ -1468,6 +1357,7 @@ function App() {
                   <textarea
                     value={reminderDraft.message}
                     rows={3}
+                    maxLength={maxReminderMessageCharacters}
                     onChange={(event) =>
                       setReminderDraft((current) => ({
                         ...current,
@@ -1597,6 +1487,7 @@ function App() {
                     <textarea
                       value={task}
                       rows={3}
+                      maxLength={maxTaskCharacters}
                       onChange={(event) => setTask(event.currentTarget.value)}
                       placeholder="让 Codex 检查这个项目并总结下一步"
                     />
