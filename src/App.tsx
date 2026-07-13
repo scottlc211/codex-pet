@@ -653,6 +653,13 @@ function App() {
     setReminderDraft(reminderConfig);
   }
 
+  function updateReminderDraft<Key extends keyof ReminderConfig>(
+    key: Key,
+    value: ReminderConfig[Key],
+  ) {
+    setReminderDraft((current) => ({ ...current, [key]: value }));
+  }
+
   function updatePetBubble(state: PetState, message: string) {
     if (state === "idle") {
       setPetBubble((current) => (current?.source === "reminder" ? current : null));
@@ -1326,10 +1333,7 @@ function App() {
                   <select
                     value={reminderDraft.enabled ? "enabled" : "disabled"}
                     onChange={(event) =>
-                      setReminderDraft((current) => ({
-                        ...current,
-                        enabled: event.currentTarget.value === "enabled",
-                      }))
+                      updateReminderDraft("enabled", event.currentTarget.value === "enabled")
                     }
                   >
                     <option value="disabled">关闭</option>
@@ -1342,12 +1346,7 @@ function App() {
                   <input
                     value={reminderDraft.title}
                     maxLength={16}
-                    onChange={(event) =>
-                      setReminderDraft((current) => ({
-                        ...current,
-                        title: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => updateReminderDraft("title", event.currentTarget.value)}
                     placeholder="例如：周报提醒"
                   />
                 </label>
@@ -1358,12 +1357,7 @@ function App() {
                     value={reminderDraft.message}
                     rows={3}
                     maxLength={maxReminderMessageCharacters}
-                    onChange={(event) =>
-                      setReminderDraft((current) => ({
-                        ...current,
-                        message: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => updateReminderDraft("message", event.currentTarget.value)}
                     placeholder="例如：老大，该写周报了。"
                   />
                 </label>
@@ -1374,10 +1368,10 @@ function App() {
                     <select
                       value={String(reminderDraft.weekday)}
                       onChange={(event) =>
-                        setReminderDraft((current) => ({
-                          ...current,
-                          weekday: clampReminderWeekday(Number(event.currentTarget.value)),
-                        }))
+                        updateReminderDraft(
+                          "weekday",
+                          clampReminderWeekday(Number(event.currentTarget.value)),
+                        )
                       }
                     >
                       {reminderWeekdayOptions.map((option) => (
@@ -1394,10 +1388,7 @@ function App() {
                       type="time"
                       value={reminderDraft.time}
                       onChange={(event) =>
-                        setReminderDraft((current) => ({
-                          ...current,
-                          time: normalizeReminderTime(event.currentTarget.value),
-                        }))
+                        updateReminderDraft("time", normalizeReminderTime(event.currentTarget.value))
                       }
                     />
                   </label>
@@ -1411,10 +1402,10 @@ function App() {
                     max={String(maxReminderDurationMinutes)}
                     value={reminderDraft.durationMinutes}
                     onChange={(event) =>
-                      setReminderDraft((current) => ({
-                        ...current,
-                        durationMinutes: clampReminderDuration(Number(event.currentTarget.value)),
-                      }))
+                      updateReminderDraft(
+                        "durationMinutes",
+                        clampReminderDuration(Number(event.currentTarget.value)),
+                      )
                     }
                   />
                   <small className="field-hint">填 0 表示持续显示，直到手动关闭。</small>
