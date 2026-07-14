@@ -875,7 +875,7 @@ fn read_reminder_configs_from_disk() -> Option<Vec<ReminderConfig>> {
 }
 
 fn parse_reminder_configs(text: &str) -> Option<Vec<ReminderConfig>> {
-    let value = serde_json::from_str::<Value>(&text).ok()?;
+    let value = serde_json::from_str::<Value>(text).ok()?;
     let configs = if value.get("reminders").is_some() {
         serde_json::from_value::<ReminderStore>(value)
             .ok()?
