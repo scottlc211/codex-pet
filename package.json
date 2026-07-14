@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "check": "pnpm build && cargo test --manifest-path src-tauri/Cargo.toml",
+    "test": "vitest run",
+    "check:versions": "node scripts/check-versions.mjs",
+    "check": "pnpm check:versions && pnpm test && pnpm build && cargo test --manifest-path src-tauri/Cargo.toml --locked",
+    "bundle:windows": "pnpm check:versions && tauri build --ci --bundles nsis,msi -- --locked",
+    "bundle:linux": "pnpm check:versions && tauri build --ci --bundles deb,appimage -- --locked",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -23,6 +27,12 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

@@ -11,9 +11,10 @@
 - 自动扫描 `~/.codex/pets` 和 `~/.codex-pet/pets`
 - 点击发送任务后，由 Rust 后端受控启动 `codex exec --json`
 - 轮询 `~/.codex/sessions`，把 Codex JSONL session 状态映射成桌宠动画
-- 左键拖动桌宠，右键打开菜单，点击设置后显示居中设置弹窗
-- 设置弹窗支持通用、主题、工作任务三类配置
-- 工作任务支持输入目录并打开系统终端
+- 桌宠与设置窗口独立拖动，支持多显示器位置和设置窗口尺寸恢复
+- 右键桌宠或系统托盘可打开设置、切换鼠标穿透或退出应用
+- 设置支持容器尺寸、显示偏移、主题、多定时提醒、诊断恢复和工作任务
+- 工作任务支持排队、取消、超时重试、历史记录和打开系统终端
 
 ## 目录
 
@@ -21,29 +22,71 @@
 pet-assets/               本地宠物资源目录
 src/                      React 桌宠界面
 src-tauri/                Tauri / Rust 后端
-.github/workflows/        Windows 构建、测试与依赖审计
+.github/workflows/        Windows/Linux 构建、测试、依赖审计与发布
 ```
 
-## 运行
+## 开发环境
+
+通用工具版本：
+
+- Node.js 22
+- pnpm 10
+- Rust 1.97.0，项目通过 `rust-toolchain.toml` 固定
+
+Windows 还需要安装：
+
+- Microsoft C++ Build Tools，勾选“使用 C++ 的桌面开发”
+- WebView2 Runtime，Windows 10/11 通常已经包含
+
+Ubuntu 22.04、Ubuntu 24.04 或 WSL Ubuntu 安装 Tauri 依赖：
 
 ```bash
-pnpm install
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  file \
+  libappindicator3-dev \
+  libgtk-3-dev \
+  librsvg2-dev \
+  libssl-dev \
+  libwebkit2gtk-4.1-dev \
+  patchelf \
+  pkg-config \
+  xdg-utils
+```
+
+运行 AppImage 时，Ubuntu 22.04 还需要 `libfuse2`；Ubuntu 24.04 对应包名为 `libfuse2t64`。
+
+WSL 中可以编译 Linux 安装包，但不能直接产出本机 Windows MSI/NSIS 安装包。运行图形界面需要 Windows 11 WSLg，并且 WSLg 下的托盘行为可能与原生桌面不同；Windows 安装包应在 Windows 或 GitHub Actions 中构建。
+
+## 本地运行
+
+```bash
+pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-当前环境需要先安装 Tauri 桌面编译依赖：
+只启动浏览器前端调试：
 
-- Rust / Cargo
-- Windows 运行：Microsoft C++ Build Tools
-- Linux/WSL 运行：WebKitGTK 与 librsvg 相关依赖
+```bash
+pnpm dev
+```
 
-只检查前端：
+浏览器模式不提供系统托盘、原生窗口、通知和终端调用。完整功能必须通过 `pnpm tauri dev` 验证。
+
+执行前端类型检查和生产构建：
 
 ```bash
 pnpm build
 ```
 
-运行前端构建和 Rust 测试：
+运行前端配置与提醒逻辑测试：
+
+```bash
+pnpm test
+```
+
+运行前端测试、构建和 Rust 测试：
 
 ```bash
 pnpm check
@@ -51,14 +94,62 @@ pnpm check
 
 `src-tauri/Cargo.lock` 和 `rust-toolchain.toml` 已纳入版本控制，保证 Rust 依赖和工具链可复现。
 
+## 本地打包
+
+Windows PowerShell：
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm bundle:windows
+```
+
+输出目录：
+
+```text
+src-tauri/target/release/codex-pet.exe
+src-tauri/target/release/bundle/msi/
+src-tauri/target/release/bundle/nsis/
+```
+
+Ubuntu、WSL 或其他兼容 Debian 系统：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm bundle:linux
+```
+
+输出目录：
+
+```text
+src-tauri/target/release/codex-pet
+src-tauri/target/release/bundle/deb/
+src-tauri/target/release/bundle/appimage/
+```
+
+## CI 与发布
+
+`.github/workflows/desktop-ci.yml` 会在真实的 `windows-latest` 和 `ubuntu-22.04` runner 上执行依赖审计、测试、Rustfmt、Clippy 和 Tauri 安装包构建。每个平台的产物都包含独立的 `SHA256SUMS-*.txt`，Actions 构建记录保留 14 天。
+
+推送与应用版本一致的标签会自动创建或更新 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+标签允许小写 `v` 或大写 `V`，但标签中的版本必须同时匹配 `package.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json`。当前流水线未配置 Windows 代码签名，下载的安装包可能触发 SmartScreen 提示；正式分发前应配置可信代码签名证书。
+
 ## 桌宠操作
 
 ```text
 左键按住人物拖动    移动桌宠位置，拖动方向会切换左右奔跑动作
 右键人物            打开桌宠菜单
-菜单 > 设置         在屏幕中央打开设置弹窗
-设置 > 通用         调整人物大小和平滑 / 像素渲染
+菜单 > 设置         首次居中打开独立设置窗口，之后恢复上次位置
+菜单 > 鼠标穿透    切换桌宠是否接收鼠标事件，可从托盘恢复
+菜单 > 退出         关闭桌宠、设置窗口和后台任务
+设置 > 通用         调整人物、容器、偏移、渲染与鼠标穿透
 设置 > 主题         以卡片形式切换已扫描到的本地宠物主题
+设置 > 提醒         添加、编辑、删除多个定时提醒
 设置 > 工作任务     输入目录、打开终端或发送 Codex 任务
 ```
 
