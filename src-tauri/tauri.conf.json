@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "Codex Pet",
-        "width": 278,
-        "height": 278,
-        "minWidth": 180,
-        "minHeight": 180,
+        "width": 260,
+        "height": 260,
+        "minWidth": 120,
+        "minHeight": 120,
         "decorations": false,
         "transparent": true,
         "backgroundColor": [0, 0, 0, 0],
@@ -25,6 +25,23 @@
         "resizable": false,
         "skipTaskbar": false,
         "shadow": false
+      },
+      {
+        "label": "settings",
+        "title": "Codex Pet 设置",
+        "width": 760,
+        "height": 520,
+        "minWidth": 680,
+        "minHeight": 480,
+        "center": true,
+        "visible": false,
+        "decorations": false,
+        "transparent": false,
+        "backgroundColor": [248, 251, 250, 255],
+        "alwaysOnTop": false,
+        "resizable": true,
+        "skipTaskbar": false,
+        "shadow": true
       }
     ],
     "security": {

@@ -10,7 +10,7 @@ import {
 } from "react";
 import { LogicalSize, PhysicalPosition, type PhysicalSize } from "@tauri-apps/api/dpi";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   currentMonitor,
@@ -28,12 +28,16 @@ import {
   LoaderCircle,
   Minus,
   Palette,
+  Pencil,
   Play,
+  Plus,
+  Power,
   RefreshCw,
   Settings,
   SlidersHorizontal,
   Sparkles,
   Terminal,
+  Trash2,
   X,
 } from "lucide-react";
 import defaultPet from "./assets/default-pet.svg";
@@ -122,6 +126,7 @@ type PetBubble = {
 };
 
 type ReminderConfig = {
+  id: string;
   enabled: boolean;
   title: string;
   message: string;
@@ -130,45 +135,62 @@ type ReminderConfig = {
   durationMinutes: number;
 };
 
-type ReminderStateSnapshot = {
+type ReminderSnapshot = {
   config: ReminderConfig;
   nextReminderAt: number | null;
 };
 
+type ReminderStateSnapshot = {
+  reminders: ReminderSnapshot[];
+};
+
 type ReminderEvent = {
+  reminderId: string;
   title: string;
   message: string;
   durationMinutes: number;
   nextReminderAt: number | null;
 };
 
+type PetPreferences = {
+  petSize: number;
+  petContainerWidth: number;
+  petContainerHeight: number;
+  petOffsetX: number;
+  petOffsetY: number;
+  renderMode: RenderMode;
+  packagePath: string;
+};
+
 const packagePathKey = "codex-pet:package-path";
 const workdirKey = "codex-pet:workdir";
 const codexPathKey = "codex-pet:codex-path";
 const petSizeKey = "codex-pet:pet-size";
+const petContainerWidthKey = "codex-pet:pet-container-width";
+const petContainerHeightKey = "codex-pet:pet-container-height";
 const petOffsetXKey = "codex-pet:pet-offset-x";
 const petOffsetYKey = "codex-pet:pet-offset-y";
 const renderModeKey = "codex-pet:render-mode";
 const terminalKey = "codex-pet:terminal";
 const reminderConfigKey = "codex-pet:reminder-config";
 const defaultPetSize = 236;
-const settingsWidth = 760;
-const settingsHeight = 520;
+const defaultPetContainerWidth = 260;
+const defaultPetContainerHeight = 260;
+const minPetContainerDimension = 120;
+const maxPetContainerDimension = 420;
 const themePreviewPetSize = 112;
 const themePreviewCanvasSize = 156;
-const petCanvasPadding = 48;
-const windowPadding = petCanvasPadding + 24;
-const defaultPetVisualOffsetX = -24;
-const defaultPetVisualOffsetY = -28;
+const defaultPetVisualOffsetX = 0;
+const defaultPetVisualOffsetY = 0;
 const petVisualOffsetLimit = 36;
 const petBubbleReserve = 72;
-const settingsPreviewGap = 32;
 const maxReminderDurationMinutes = 24 * 60;
 const maxReminderMessageCharacters = 1000;
 const maxTaskCharacters = 64 * 1024;
 const autoTerminal: TerminalOption = { id: "auto", label: "自动选择" };
 const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const isSettingsWindow = isTauriRuntime && getCurrentWindow().label === "settings";
 const reminderWeekdayOptions = [
   { value: 1, label: "周一" },
   { value: 2, label: "周二" },
@@ -179,6 +201,7 @@ const reminderWeekdayOptions = [
   { value: 0, label: "周日" },
 ] as const;
 const defaultReminderConfig: ReminderConfig = {
+  id: "reminder-default",
   enabled: false,
   title: "周报提醒",
   message: "老大，该写周报了。",
@@ -207,18 +230,33 @@ const activeTaskStates = new Set<PetState>(["thinking", "working", "running_comm
 
 function App() {
   const [packagePath, setPackagePath] = useState(() => localStorage.getItem(packagePathKey) ?? "");
+  const [selectedPetPath, setSelectedPetPath] = useState(
+    () => localStorage.getItem(packagePathKey) ?? "",
+  );
   const [workdir, setWorkdir] = useState(() => localStorage.getItem(workdirKey) ?? "");
   const [codexPath, setCodexPath] = useState(() => localStorage.getItem(codexPathKey) ?? "");
   const [petSize, setPetSize] = useState(() => readPetSize());
+  const [petContainerWidth, setPetContainerWidth] = useState(() =>
+    readPetContainerDimension(petContainerWidthKey, defaultPetContainerWidth),
+  );
+  const [petContainerHeight, setPetContainerHeight] = useState(() =>
+    readPetContainerDimension(petContainerHeightKey, defaultPetContainerHeight),
+  );
   const [petOffsetX, setPetOffsetX] = useState(() => readPetOffset(petOffsetXKey, defaultPetVisualOffsetX));
   const [petOffsetY, setPetOffsetY] = useState(() => readPetOffset(petOffsetYKey, defaultPetVisualOffsetY));
   const [renderMode, setRenderMode] = useState<RenderMode>(() => readRenderMode());
-  const [reminderConfig, setReminderConfig] = useState<ReminderConfig>(() => readReminderConfig());
-  const [reminderDraft, setReminderDraft] = useState<ReminderConfig>(() => reminderConfig);
+  const [reminderSnapshots, setReminderSnapshots] = useState<ReminderSnapshot[]>(() => readReminderSnapshots());
+  const [reminderDraft, setReminderDraft] = useState<ReminderConfig | null>(() =>
+    readReminderSnapshots()[0]?.config ?? null,
+  );
+  const [selectedReminderId, setSelectedReminderId] = useState<string | null>(() =>
+    readReminderSnapshots()[0]?.config.id ?? null,
+  );
+  const [pendingReminderDeleteId, setPendingReminderDeleteId] = useState<string | null>(null);
   const [terminalId, setTerminalId] = useState(() => localStorage.getItem(terminalKey) ?? autoTerminal.id);
   const [terminals, setTerminals] = useState<TerminalOption[]>([autoTerminal]);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(isSettingsWindow);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [settingsModalPosition, setSettingsModalPosition] = useState<ModalPosition | null>(null);
   const [task, setTask] = useState("");
@@ -228,7 +266,6 @@ function App() {
   const [petBubble, setPetBubble] = useState<PetBubble | null>(null);
   const [activePet, setActivePet] = useState<PetCandidate | null>(null);
   const [candidates, setCandidates] = useState<PetCandidate[]>([]);
-  const [nextReminderAt, setNextReminderAt] = useState<number | null>(null);
   const [events, setEvents] = useState<CodexEvent[]>([
     { kind: "idle", message: "准备就绪", state: "idle" },
   ]);
@@ -240,8 +277,6 @@ function App() {
   const reminderTimerRef = useRef<number | null>(null);
   const reminderAutoHideTimerRef = useRef<number | null>(null);
   const reminderTokenRef = useRef(0);
-  const settingsReturnPositionRef = useRef<PhysicalPosition | null>(null);
-  const settingsReturnBubbleReserveRef = useRef(0);
   const windowLayoutKeyRef = useRef("");
 
   const visual = useMemo(() => {
@@ -260,12 +295,22 @@ function App() {
     : `default-${currentState}`;
   const shellStyle = {
     "--pet-size": `${petSize}px`,
-    "--pet-canvas-size": `${petSize + petCanvasPadding}px`,
+    "--pet-container-width": `${petContainerWidth}px`,
+    "--pet-container-height": `${petContainerHeight}px`,
     "--pet-bubble-reserve": `${bubbleVisible ? petBubbleReserve : 0}px`,
     "--pet-bubble-shift": `${bubbleVisible ? petBubbleReserve / 2 : 0}px`,
     "--pet-visual-offset-x": `${petOffsetX}px`,
     "--pet-visual-offset-y": `${petOffsetY}px`,
   } as CSSProperties;
+  const petPreferences: PetPreferences = {
+    petSize,
+    petContainerWidth,
+    petContainerHeight,
+    petOffsetX,
+    petOffsetY,
+    renderMode,
+    packagePath: selectedPetPath,
+  };
   const settingsModalStyle = settingsModalPosition
     ? ({
         left: `${settingsModalPosition.x}px`,
@@ -279,6 +324,12 @@ function App() {
     "--pet-visual-offset-x": "0px",
     "--pet-visual-offset-y": "0px",
   } as CSSProperties;
+  const savedReminderDraft = reminderDraft
+    ? reminderSnapshots.find((snapshot) => snapshot.config.id === reminderDraft.id)
+    : undefined;
+  const pendingReminderDelete = pendingReminderDeleteId
+    ? reminderSnapshots.find((snapshot) => snapshot.config.id === pendingReminderDeleteId)
+    : undefined;
 
   useEffect(() => {
     if (!isTauriRuntime) {
@@ -290,10 +341,7 @@ function App() {
     });
     void invoke<ReminderStateSnapshot>("get_reminder_state")
       .then((snapshot) => {
-        const config = normalizeReminderConfig(snapshot.config);
-        setReminderConfig(config);
-        setReminderDraft(config);
-        setNextReminderAt(snapshot.nextReminderAt);
+        applyReminderState(snapshot);
       })
       .catch((error) => {
         pushEvent({ kind: "reminder.load.error", message: String(error), state: "error" });
@@ -325,6 +373,7 @@ function App() {
     const unlistenReminderPromise = listen<ReminderEvent>("reminder-triggered", (event) => {
       const reminder = event.payload;
       triggerReminderBubble({
+        id: reminder.reminderId,
         enabled: true,
         title: reminder.title,
         message: reminder.message,
@@ -332,51 +381,69 @@ function App() {
         time: defaultReminderConfig.time,
         durationMinutes: reminder.durationMinutes,
       });
-      setNextReminderAt(reminder.nextReminderAt);
+      setReminderSnapshots((current) =>
+        current.map((snapshot) =>
+          snapshot.config.id === reminder.reminderId
+            ? { ...snapshot, nextReminderAt: reminder.nextReminderAt }
+            : snapshot,
+        ),
+      );
+    });
+    const unlistenReminderStatePromise = listen<ReminderStateSnapshot>(
+      "reminder-state-updated",
+      (event) => applyReminderState(event.payload, false),
+    );
+    const unlistenPreferencesPromise = listen<PetPreferences>("pet-preferences-updated", (event) => {
+      applyPetPreferences(normalizePetPreferences(event.payload));
     });
 
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
       void unlistenReminderPromise.then((unlisten) => unlisten());
+      void unlistenReminderStatePromise.then((unlisten) => unlisten());
+      void unlistenPreferencesPromise.then((unlisten) => unlisten());
       clearIdleTimer();
     };
   }, []);
 
   useEffect(() => {
     localStorage.setItem(petSizeKey, String(petSize));
-    const nextLayoutKey = settingsOpen
-      ? `settings:${petSize}`
-      : `compact:${petSize}:${bubbleVisible ? "bubble" : "plain"}`;
+  }, [petSize]);
+
+  useEffect(() => {
+    localStorage.setItem(petContainerWidthKey, String(petContainerWidth));
+  }, [petContainerWidth]);
+
+  useEffect(() => {
+    localStorage.setItem(petContainerHeightKey, String(petContainerHeight));
+  }, [petContainerHeight]);
+
+  useEffect(() => {
+    if (isSettingsWindow) {
+      return;
+    }
+
+    const nextLayoutKey = `${petContainerWidth}:${petContainerHeight}:${bubbleVisible ? "bubble" : "plain"}`;
     if (windowLayoutKeyRef.current === nextLayoutKey) {
       return;
     }
     windowLayoutKeyRef.current = nextLayoutKey;
 
-    const returnPosition = settingsReturnPositionRef.current;
-    const nextBubbleReserve = !settingsOpen && bubbleVisible ? petBubbleReserve : 0;
+    const nextBubbleReserve = bubbleVisible ? petBubbleReserve : 0;
     const previousBubbleReserve = petBubbleReserveRef.current;
-    const returnBubbleReserve = settingsReturnBubbleReserveRef.current;
-    void resizeWindow(
-      settingsOpen,
-      petSize,
-      returnPosition,
+    void resizePetWindow(
+      petContainerWidth,
+      petContainerHeight,
       nextBubbleReserve,
       previousBubbleReserve,
-      returnBubbleReserve,
     )
       .then(() => {
-        if (!settingsOpen) {
-          petBubbleReserveRef.current = nextBubbleReserve;
-        }
-        if (!settingsOpen && returnPosition) {
-          settingsReturnPositionRef.current = null;
-          settingsReturnBubbleReserveRef.current = 0;
-        }
+        petBubbleReserveRef.current = nextBubbleReserve;
       })
       .catch((error) => {
         pushEvent({ kind: "window.resize.error", message: String(error), state: "error" });
       });
-  }, [petSize, settingsOpen, bubbleVisible]);
+  }, [petContainerWidth, petContainerHeight, bubbleVisible]);
 
   useEffect(() => {
     localStorage.setItem(petOffsetXKey, String(petOffsetX));
@@ -392,9 +459,12 @@ function App() {
 
   useEffect(() => {
     if (!isTauriRuntime) {
-      localStorage.setItem(reminderConfigKey, JSON.stringify(reminderConfig));
+      localStorage.setItem(
+        reminderConfigKey,
+        JSON.stringify({ reminders: reminderSnapshots.map((snapshot) => snapshot.config) }),
+      );
     }
-  }, [reminderConfig]);
+  }, [reminderSnapshots]);
 
   useEffect(() => {
     localStorage.setItem(terminalKey, terminalId);
@@ -418,7 +488,7 @@ function App() {
     return () => {
       clearReminderScheduleTimer();
     };
-  }, [reminderConfig]);
+  }, [reminderSnapshots]);
 
   useEffect(() => {
     return () => {
@@ -428,12 +498,12 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (packagePath) {
-      localStorage.setItem(packagePathKey, packagePath);
+    if (selectedPetPath) {
+      localStorage.setItem(packagePathKey, selectedPetPath);
     } else {
       localStorage.removeItem(packagePathKey);
     }
-  }, [packagePath]);
+  }, [selectedPetPath]);
 
   useEffect(() => {
     if (workdir) {
@@ -442,6 +512,10 @@ function App() {
       localStorage.removeItem(workdirKey);
     }
   }, [workdir]);
+
+  useEffect(() => {
+    setActivePet(candidates.find((candidate) => candidate.path === selectedPetPath) ?? null);
+  }, [candidates, selectedPetPath]);
 
   async function refreshCandidates() {
     if (!isTauriRuntime) {
@@ -452,10 +526,7 @@ function App() {
     try {
       const found = await invoke<PetCandidate[]>("find_pet_candidates");
       setCandidates(found);
-      if (!activePet && found[0]) {
-        setActivePet(found[0]);
-        setPackagePath(found[0].path);
-      }
+      setActivePet(found.find((candidate) => candidate.path === selectedPetPath) ?? null);
       pushEvent({ kind: "scan", message: `发现 ${found.length} 个可用宠物资源`, state: "idle" });
     } catch (error) {
       setCurrentState("error");
@@ -502,7 +573,7 @@ function App() {
         sourcePath: packagePath,
       });
       setActivePet(imported);
-      setPackagePath(imported.path);
+      updatePetPreference("packagePath", imported.path);
       setCurrentState("success");
       if (!candidates.some((candidate) => candidate.path === imported.path)) {
         setCandidates((current) => [...current, imported]);
@@ -531,7 +602,7 @@ function App() {
     }
 
     setRunning(true);
-    setSettingsOpen(false);
+    closeSettings();
     setContextMenuOpen(false);
     setCurrentState("thinking");
     const queuedEvent: CodexEvent = { kind: "queued", message: "任务已发送", state: "thinking" };
@@ -558,6 +629,44 @@ function App() {
     setEvents((current) => [...current.slice(-5), event]);
   }
 
+  function applyPetPreferences(preferences: PetPreferences, updatePathDraft = true) {
+    setPetSize(preferences.petSize);
+    setPetContainerWidth(preferences.petContainerWidth);
+    setPetContainerHeight(preferences.petContainerHeight);
+    setPetOffsetX(preferences.petOffsetX);
+    setPetOffsetY(preferences.petOffsetY);
+    setRenderMode(preferences.renderMode);
+    setSelectedPetPath(preferences.packagePath);
+    if (updatePathDraft) {
+      setPackagePath(preferences.packagePath);
+    }
+  }
+
+  function updatePetPreference<Key extends keyof PetPreferences>(
+    key: Key,
+    value: PetPreferences[Key],
+  ) {
+    const preferences = normalizePetPreferences({ ...petPreferences, [key]: value });
+    applyPetPreferences(preferences, key === "packagePath");
+    if (isTauriRuntime) {
+      void emitTo("main", "pet-preferences-updated", preferences).catch((error) => {
+        pushEvent({ kind: "preferences.sync.error", message: String(error), state: "error" });
+      });
+    }
+  }
+
+  function applyReminderState(snapshot: ReminderStateSnapshot, updateDraft = true) {
+    const reminders = normalizeReminderSnapshots(snapshot.reminders);
+    setReminderSnapshots(reminders);
+    if (!updateDraft) {
+      return;
+    }
+    const selected =
+      reminders.find((reminder) => reminder.config.id === selectedReminderId) ?? reminders[0] ?? null;
+    setSelectedReminderId(selected?.config.id ?? null);
+    setReminderDraft(selected ? { ...selected.config } : null);
+  }
+
   function clearReminderScheduleTimer() {
     if (reminderTimerRef.current !== null) {
       window.clearTimeout(reminderTimerRef.current);
@@ -574,16 +683,21 @@ function App() {
 
   function scheduleNextReminder() {
     clearReminderScheduleTimer();
-    const nextTrigger = nextReminderDate(reminderConfig);
-    setNextReminderAt(nextTrigger?.getTime() ?? null);
-    if (!nextTrigger) {
+    const nextReminder = findNextReminder(reminderSnapshots);
+    if (!nextReminder) {
       return;
     }
 
-    const delay = Math.max(0, nextTrigger.getTime() - Date.now());
+    const delay = Math.max(0, nextReminder.nextReminderAt - Date.now());
     reminderTimerRef.current = window.setTimeout(() => {
-      triggerReminderBubble(reminderConfig);
-      scheduleNextReminder();
+      triggerReminderBubble(nextReminder.config);
+      const nextNow = new Date(Date.now() + 1000);
+      setReminderSnapshots((current) =>
+        current.map((snapshot) => ({
+          config: snapshot.config,
+          nextReminderAt: nextReminderDate(snapshot.config, nextNow)?.getTime() ?? null,
+        })),
+      );
     }, delay);
   }
 
@@ -616,6 +730,9 @@ function App() {
   }
 
   function previewReminder() {
+    if (!reminderDraft) {
+      return;
+    }
     const config = normalizeReminderConfig(reminderDraft);
     if (!isTauriRuntime) {
       triggerReminderBubble(config);
@@ -628,21 +745,27 @@ function App() {
   }
 
   function saveReminderConfig() {
+    if (!reminderDraft) {
+      return;
+    }
     const nextConfig = normalizeReminderConfig(reminderDraft);
+    setSelectedReminderId(nextConfig.id);
     if (!isTauriRuntime) {
+      const nextSnapshots = upsertReminderSnapshot(reminderSnapshots, nextConfig);
       setReminderDraft(nextConfig);
-      setReminderConfig(nextConfig);
-      pushEvent({ kind: "reminder.saved", message: "定时提醒配置已保存", state: "idle" });
+      setReminderSnapshots(nextSnapshots);
+      pushEvent({ kind: "reminder.saved", message: "提醒任务已保存", state: "idle" });
       return;
     }
 
     void invoke<ReminderStateSnapshot>("save_reminder_config", { config: nextConfig })
       .then((snapshot) => {
-        const config = normalizeReminderConfig(snapshot.config);
-        setReminderDraft(config);
-        setReminderConfig(config);
-        setNextReminderAt(snapshot.nextReminderAt);
-        pushEvent({ kind: "reminder.saved", message: "定时提醒配置已保存", state: "idle" });
+        const reminders = normalizeReminderSnapshots(snapshot.reminders);
+        const saved = reminders.find((reminder) => reminder.config.id === nextConfig.id);
+        setReminderSnapshots(reminders);
+        setSelectedReminderId(saved?.config.id ?? null);
+        setReminderDraft(saved ? { ...saved.config } : null);
+        pushEvent({ kind: "reminder.saved", message: "提醒任务已保存", state: "idle" });
       })
       .catch((error) => {
         pushEvent({ kind: "reminder.save.error", message: String(error), state: "error" });
@@ -650,14 +773,82 @@ function App() {
   }
 
   function resetReminderDraft() {
-    setReminderDraft(reminderConfig);
+    if (!reminderDraft) {
+      return;
+    }
+    const saved = reminderSnapshots.find(
+      (reminder) => reminder.config.id === reminderDraft.id,
+    );
+    setReminderDraft(
+      saved
+        ? { ...saved.config }
+        : { ...createReminderConfig(), id: reminderDraft.id },
+    );
+  }
+
+  function createReminder() {
+    const reminder = createReminderConfig();
+    setSelectedReminderId(reminder.id);
+    setReminderDraft(reminder);
+  }
+
+  function editReminder(snapshot: ReminderSnapshot) {
+    setSelectedReminderId(snapshot.config.id);
+    setReminderDraft({ ...snapshot.config });
+  }
+
+  function requestReminderDeletion(reminderId: string) {
+    const existing = reminderSnapshots.find((reminder) => reminder.config.id === reminderId);
+    if (!existing) {
+      return;
+    }
+
+    setPendingReminderDeleteId(existing.config.id);
+  }
+
+  function confirmReminderDeletion() {
+    const reminderId = pendingReminderDeleteId;
+    if (!reminderId) {
+      return;
+    }
+    setPendingReminderDeleteId(null);
+
+    const applyDeletedState = (snapshot: ReminderStateSnapshot) => {
+      const reminders = normalizeReminderSnapshots(snapshot.reminders);
+      setReminderSnapshots(reminders);
+      if (selectedReminderId !== reminderId) {
+        return;
+      }
+      const first = reminders[0] ?? null;
+      setSelectedReminderId(first?.config.id ?? null);
+      setReminderDraft(first ? { ...first.config } : null);
+    };
+
+    if (!isTauriRuntime) {
+      applyDeletedState({
+        reminders: reminderSnapshots.filter(
+          (reminder) => reminder.config.id !== reminderId,
+        ),
+      });
+      pushEvent({ kind: "reminder.deleted", message: "提醒任务已删除", state: "idle" });
+      return;
+    }
+
+    void invoke<ReminderStateSnapshot>("delete_reminder_config", { reminderId })
+      .then((snapshot) => {
+        applyDeletedState(snapshot);
+        pushEvent({ kind: "reminder.deleted", message: "提醒任务已删除", state: "idle" });
+      })
+      .catch((error) => {
+        pushEvent({ kind: "reminder.delete.error", message: String(error), state: "error" });
+      });
   }
 
   function updateReminderDraft<Key extends keyof ReminderConfig>(
     key: Key,
     value: ReminderConfig[Key],
   ) {
-    setReminderDraft((current) => ({ ...current, [key]: value }));
+    setReminderDraft((current) => (current ? { ...current, [key]: value } : current));
   }
 
   function updatePetBubble(state: PetState, message: string) {
@@ -857,22 +1048,26 @@ function App() {
 
   async function openSettingsModal() {
     setContextMenuOpen(false);
+    if (isTauriRuntime && !isSettingsWindow) {
+      try {
+        await invoke("open_settings_window");
+      } catch (error) {
+        pushEvent({ kind: "settings.open.error", message: String(error), state: "error" });
+      }
+      return;
+    }
     setSettingsSection("general");
     setSettingsModalPosition(null);
-    setReminderDraft(reminderConfig);
-    settingsReturnBubbleReserveRef.current = bubbleVisible ? petBubbleReserve : 0;
-    if (isTauriRuntime) {
-      try {
-        settingsReturnPositionRef.current = await getCurrentWindow().outerPosition();
-      } catch (error) {
-        pushEvent({ kind: "window.position.error", message: String(error), state: "error" });
-      }
-      void invoke("restore_main_window").catch(() => undefined);
-    }
     setSettingsOpen(true);
   }
 
   function closeSettings() {
+    if (isTauriRuntime && isSettingsWindow) {
+      void invoke("hide_settings_window").catch((error) => {
+        pushEvent({ kind: "settings.hide.error", message: String(error), state: "error" });
+      });
+      return;
+    }
     setSettingsOpen(false);
     setSettingsModalPosition(null);
   }
@@ -883,22 +1078,24 @@ function App() {
     }
   }
 
-  async function closeWindow() {
-    if (isTauriRuntime) {
-      await getCurrentWindow().close();
+  function quitApplication() {
+    if (!isTauriRuntime) {
+      window.close();
+      return;
     }
+    void invoke("quit_app");
   }
 
   function selectCandidate(candidate: PetCandidate) {
     setActivePet(candidate);
-    setPackagePath(candidate.path);
+    updatePetPreference("packagePath", candidate.path);
     setCurrentState("idle");
     pushEvent({ kind: "pet.selected", message: `已选择：${candidate.name}`, state: "idle" });
   }
 
   function selectDefaultPet() {
     setActivePet(null);
-    setPackagePath("");
+    updatePetPreference("packagePath", "");
     setCurrentState("idle");
     pushEvent({ kind: "pet.selected", message: "已选择：默认主题", state: "idle" });
   }
@@ -979,6 +1176,12 @@ function App() {
     }
 
     event.preventDefault();
+    if (isTauriRuntime && isSettingsWindow) {
+      void getCurrentWindow().startDragging().catch((error) => {
+        pushEvent({ kind: "settings.drag.error", message: String(error), state: "error" });
+      });
+      return;
+    }
     const modal = event.currentTarget;
     const rect = modal.getBoundingClientRect();
     const pointerId = event.pointerId;
@@ -1038,67 +1241,76 @@ function App() {
   }
 
   return (
-    <main className={`pet-shell ${settingsOpen ? "has-settings" : ""}`} style={shellStyle}>
-      <section
-        className={`pet-stage state-${currentState} render-${renderMode} ${bubbleVisible ? "has-bubble" : ""}`}
-        aria-label="桌宠"
-        onPointerDown={startPetDrag}
-        onPointerMove={movePet}
-        onPointerUp={endPetDrag}
-        onPointerCancel={endPetDrag}
-        onContextMenu={openContextMenu}
-      >
-        {petBubble && (
-          <div
-            className={`pet-bubble tone-${petBubble.tone} ${petBubble.dismissible ? "is-dismissible" : ""}`}
-            role="status"
-            aria-live="polite"
-          >
-            <div className="pet-bubble-header">
-              <strong>{petBubble.label}</strong>
-              {petBubble.dismissible && (
-                <button
-                  className="pet-bubble-close"
-                  type="button"
-                  aria-label="关闭状态提示"
-                  title="关闭状态提示"
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closePetBubble();
-                  }}
-                >
-                  <X size={12} />
-                </button>
-              )}
+    <main
+      className={`${isSettingsWindow ? "settings-window-shell" : "pet-shell"} ${settingsOpen ? "has-settings" : ""}`}
+      style={shellStyle}
+    >
+      {!isSettingsWindow && (
+        <section
+          className={`pet-stage state-${currentState} render-${renderMode} ${bubbleVisible ? "has-bubble" : ""}`}
+          aria-label="桌宠"
+          onPointerDown={startPetDrag}
+          onPointerMove={movePet}
+          onPointerUp={endPetDrag}
+          onPointerCancel={endPetDrag}
+          onContextMenu={openContextMenu}
+        >
+          {petBubble && (
+            <div
+              className={`pet-bubble tone-${petBubble.tone} ${petBubble.dismissible ? "is-dismissible" : ""}`}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="pet-bubble-header">
+                <strong>{petBubble.label}</strong>
+                {petBubble.dismissible && (
+                  <button
+                    className="pet-bubble-close"
+                    type="button"
+                    aria-label="关闭状态提示"
+                    title="关闭状态提示"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closePetBubble();
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+              <span>{petBubble.message}</span>
             </div>
-            <span>{petBubble.message}</span>
-          </div>
-        )}
-        <PetVisualView
-          key={visualIdentity}
-          visual={visual}
-          state={currentState}
-          renderMode={renderMode}
-          petSize={petSize}
-        />
-      </section>
+          )}
+          <PetVisualView
+            key={visualIdentity}
+            visual={visual}
+            state={currentState}
+            renderMode={renderMode}
+            petSize={petSize}
+          />
+        </section>
+      )}
 
-      {contextMenuOpen && (
-        <div className="context-tablist" role="tablist" aria-label="桌宠菜单" onContextMenu={(event) => event.preventDefault()}>
-          <button type="button" role="tab" aria-selected="true" onClick={openSettingsModal}>
+      {!isSettingsWindow && contextMenuOpen && (
+        <div className="context-tablist" role="menu" aria-label="桌宠菜单" onContextMenu={(event) => event.preventDefault()}>
+          <button type="button" role="menuitem" onClick={openSettingsModal}>
             <Settings size={16} />
             <span>设置</span>
+          </button>
+          <button className="danger" type="button" role="menuitem" onClick={quitApplication}>
+            <Power size={16} />
+            <span>退出</span>
           </button>
         </div>
       )}
 
-      {settingsOpen && (
+      {(isSettingsWindow || settingsOpen) && (
         <section
           className="settings-modal"
-          style={settingsModalStyle}
+          style={isSettingsWindow ? undefined : settingsModalStyle}
           role="dialog"
-          aria-modal="true"
+          aria-modal={!isSettingsWindow}
           aria-label="桌宠设置"
           onPointerDown={startSettingsModalDrag}
           onPointerMove={moveSettingsModal}
@@ -1149,8 +1361,8 @@ function App() {
               <button className="icon-button" type="button" title="最小化" onClick={minimizeWindow}>
                 <Minus size={16} />
               </button>
-              <button className="icon-button danger" type="button" title="关闭程序" onClick={closeWindow}>
-                <X size={16} />
+              <button className="icon-button danger" type="button" title="退出应用" onClick={quitApplication}>
+                <Power size={16} />
               </button>
             </div>
           </aside>
@@ -1180,11 +1392,50 @@ function App() {
                       max="330"
                       step="5"
                       value={petSize}
-                      onChange={(event) => setPetSize(clampPetSize(Number(event.currentTarget.value)))}
+                      onChange={(event) =>
+                        updatePetPreference("petSize", clampPetSize(Number(event.currentTarget.value)))
+                      }
                     />
                     <output>{petSize}px</output>
                   </div>
                 </label>
+                <div className="field">
+                  <span>桌宠容器</span>
+                  <div className="container-size-row">
+                    <label>
+                      <span>宽度</span>
+                      <input
+                        type="number"
+                        min={minPetContainerDimension}
+                        max={maxPetContainerDimension}
+                        step="4"
+                        value={petContainerWidth}
+                        onChange={(event) =>
+                          updatePetPreference(
+                            "petContainerWidth",
+                            clampPetContainerDimension(Number(event.currentTarget.value)),
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>高度</span>
+                      <input
+                        type="number"
+                        min={minPetContainerDimension}
+                        max={maxPetContainerDimension}
+                        step="4"
+                        value={petContainerHeight}
+                        onChange={(event) =>
+                          updatePetPreference(
+                            "petContainerHeight",
+                            clampPetContainerDimension(Number(event.currentTarget.value)),
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                </div>
                 <div className="field">
                   <span>显示偏移</span>
                   <div className="offset-row">
@@ -1197,7 +1448,9 @@ function App() {
                         max={petVisualOffsetLimit}
                         step="1"
                         value={petOffsetX}
-                        onChange={(event) => setPetOffsetX(clampPetOffset(Number(event.currentTarget.value)))}
+                        onChange={(event) =>
+                          updatePetPreference("petOffsetX", clampPetOffset(Number(event.currentTarget.value)))
+                        }
                       />
                       <output>{petOffsetX}px</output>
                     </label>
@@ -1210,7 +1463,9 @@ function App() {
                         max={petVisualOffsetLimit}
                         step="1"
                         value={petOffsetY}
-                        onChange={(event) => setPetOffsetY(clampPetOffset(Number(event.currentTarget.value)))}
+                        onChange={(event) =>
+                          updatePetPreference("petOffsetY", clampPetOffset(Number(event.currentTarget.value)))
+                        }
                       />
                       <output>{petOffsetY}px</output>
                     </label>
@@ -1218,7 +1473,12 @@ function App() {
                 </div>
                 <label className="field">
                   <span>渲染方式</span>
-                  <select value={renderMode} onChange={(event) => setRenderMode(event.currentTarget.value as RenderMode)}>
+                  <select
+                    value={renderMode}
+                    onChange={(event) =>
+                      updatePetPreference("renderMode", event.currentTarget.value as RenderMode)
+                    }
+                  >
                     <option value="smooth">平滑</option>
                     <option value="pixelated">像素</option>
                   </select>
@@ -1298,118 +1558,189 @@ function App() {
             )}
 
             {settingsSection === "reminder" && (
-              <div className="settings-page">
+              <div className="settings-page reminder-page">
                 <div className="section-title with-action">
                   <h2>定时提醒</h2>
-                  <div className="reminder-actions">
-                    <button className="icon-button" type="button" title="还原提醒配置" onClick={resetReminderDraft}>
-                      <RefreshCw size={16} />
-                    </button>
-                    <button className="secondary-button" type="button" onClick={saveReminderConfig}>
-                      <Check size={15} />
-                      <span>保存</span>
-                    </button>
-                  </div>
+                  <button className="secondary-button" type="button" onClick={createReminder}>
+                    <Plus size={15} />
+                    <span>新建提醒</span>
+                  </button>
                 </div>
 
-                <div className="reminder-card">
-                  <div className="reminder-card-header">
-                    <div>
-                      <strong>下次提醒</strong>
-                      <span>{formatReminderSchedule(nextReminderAt, reminderConfig.enabled)}</span>
+                <div className="reminder-workspace">
+                  <div className="reminder-list" aria-label="提醒任务列表">
+                    {reminderSnapshots.length === 0 && (
+                      <div className="reminder-empty">
+                        <Bell size={18} />
+                        <span>暂无提醒任务</span>
+                      </div>
+                    )}
+                    {reminderSnapshots.map((snapshot) => (
+                      <div
+                        className={`reminder-list-item ${selectedReminderId === snapshot.config.id ? "active" : ""}`}
+                        key={snapshot.config.id}
+                      >
+                        <button type="button" onClick={() => editReminder(snapshot)}>
+                          <span>
+                            <strong>{snapshot.config.title}</strong>
+                            <small>
+                              {formatReminderSchedule(
+                                snapshot.nextReminderAt,
+                                snapshot.config.enabled,
+                              )}
+                            </small>
+                          </span>
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          className="reminder-delete-button"
+                          type="button"
+                          title="删除提醒"
+                          aria-label={`删除提醒 ${snapshot.config.title}`}
+                          onClick={() => requestReminderDeletion(snapshot.config.id)}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {reminderDraft ? (
+                    <div className="reminder-editor">
+                      <header className="reminder-editor-header">
+                        <div>
+                          <strong>{savedReminderDraft ? "编辑提醒" : "新建提醒"}</strong>
+                          <span>
+                            {formatReminderSchedule(
+                              savedReminderDraft?.nextReminderAt ?? null,
+                              reminderDraft.enabled,
+                            )}
+                          </span>
+                        </div>
+                        <div className="reminder-actions">
+                          <button
+                            className="icon-button"
+                            type="button"
+                            title="还原当前提醒"
+                            onClick={resetReminderDraft}
+                          >
+                            <RefreshCw size={16} />
+                          </button>
+                          <button className="secondary-button" type="button" onClick={saveReminderConfig}>
+                            <Check size={15} />
+                            <span>保存</span>
+                          </button>
+                        </div>
+                      </header>
+
+                      <div className="reminder-summary">
+                        <div>
+                          <strong>下次提醒</strong>
+                          <span>
+                            {formatReminderSchedule(
+                              savedReminderDraft?.nextReminderAt ?? null,
+                              reminderDraft.enabled,
+                            )}
+                          </span>
+                        </div>
+                        <button className="secondary-button" type="button" onClick={previewReminder}>
+                          <Bell size={15} />
+                          <span>立即测试</span>
+                        </button>
+                      </div>
+
+                      <label className="toggle-field">
+                        <span>启用提醒</span>
+                        <input
+                          type="checkbox"
+                          checked={reminderDraft.enabled}
+                          onChange={(event) =>
+                            updateReminderDraft("enabled", event.currentTarget.checked)
+                          }
+                        />
+                        <span className="toggle-track" aria-hidden="true" />
+                      </label>
+
+                      <label className="field">
+                        <span>提醒标题</span>
+                        <input
+                          value={reminderDraft.title}
+                          maxLength={16}
+                          onChange={(event) => updateReminderDraft("title", event.currentTarget.value)}
+                          placeholder="例如：周报提醒"
+                        />
+                      </label>
+
+                      <label className="field">
+                        <span>提醒内容</span>
+                        <textarea
+                          value={reminderDraft.message}
+                          rows={3}
+                          maxLength={maxReminderMessageCharacters}
+                          onChange={(event) => updateReminderDraft("message", event.currentTarget.value)}
+                          placeholder="例如：老大，该写周报了。"
+                        />
+                      </label>
+
+                      <div className="reminder-grid">
+                        <label className="field">
+                          <span>提醒日期</span>
+                          <select
+                            value={String(reminderDraft.weekday)}
+                            onChange={(event) =>
+                              updateReminderDraft(
+                                "weekday",
+                                clampReminderWeekday(Number(event.currentTarget.value)),
+                              )
+                            }
+                          >
+                            {reminderWeekdayOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="field">
+                          <span>提醒时间</span>
+                          <input
+                            type="time"
+                            value={reminderDraft.time}
+                            onChange={(event) =>
+                              updateReminderDraft(
+                                "time",
+                                normalizeReminderTime(event.currentTarget.value),
+                              )
+                            }
+                          />
+                        </label>
+                      </div>
+
+                      <label className="field">
+                        <span>提醒时长（分钟）</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max={String(maxReminderDurationMinutes)}
+                          value={reminderDraft.durationMinutes}
+                          onChange={(event) =>
+                            updateReminderDraft(
+                              "durationMinutes",
+                              clampReminderDuration(Number(event.currentTarget.value)),
+                            )
+                          }
+                        />
+                        <small className="field-hint">0 表示持续显示，直到手动关闭。</small>
+                      </label>
                     </div>
-                    <button className="secondary-button" type="button" onClick={previewReminder}>
-                      <Bell size={15} />
-                      <span>立即测试</span>
-                    </button>
-                  </div>
-                  <p>
-                    后台调度已接管提醒，到点后会发送系统通知并唤起桌宠。
-                  </p>
+                  ) : (
+                    <div className="reminder-empty editor-empty">
+                      <Bell size={20} />
+                      <span>选择或新建提醒任务</span>
+                    </div>
+                  )}
                 </div>
-
-                <label className="field">
-                  <span>提醒状态</span>
-                  <select
-                    value={reminderDraft.enabled ? "enabled" : "disabled"}
-                    onChange={(event) =>
-                      updateReminderDraft("enabled", event.currentTarget.value === "enabled")
-                    }
-                  >
-                    <option value="disabled">关闭</option>
-                    <option value="enabled">开启</option>
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span>提醒标题</span>
-                  <input
-                    value={reminderDraft.title}
-                    maxLength={16}
-                    onChange={(event) => updateReminderDraft("title", event.currentTarget.value)}
-                    placeholder="例如：周报提醒"
-                  />
-                </label>
-
-                <label className="field">
-                  <span>提醒内容</span>
-                  <textarea
-                    value={reminderDraft.message}
-                    rows={3}
-                    maxLength={maxReminderMessageCharacters}
-                    onChange={(event) => updateReminderDraft("message", event.currentTarget.value)}
-                    placeholder="例如：老大，该写周报了。"
-                  />
-                </label>
-
-                <div className="reminder-grid">
-                  <label className="field">
-                    <span>提醒日期</span>
-                    <select
-                      value={String(reminderDraft.weekday)}
-                      onChange={(event) =>
-                        updateReminderDraft(
-                          "weekday",
-                          clampReminderWeekday(Number(event.currentTarget.value)),
-                        )
-                      }
-                    >
-                      {reminderWeekdayOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="field">
-                    <span>提醒时间</span>
-                    <input
-                      type="time"
-                      value={reminderDraft.time}
-                      onChange={(event) =>
-                        updateReminderDraft("time", normalizeReminderTime(event.currentTarget.value))
-                      }
-                    />
-                  </label>
-                </div>
-
-                <label className="field">
-                  <span>提醒时长（分钟）</span>
-                  <input
-                    type="number"
-                    min="0"
-                    max={String(maxReminderDurationMinutes)}
-                    value={reminderDraft.durationMinutes}
-                    onChange={(event) =>
-                      updateReminderDraft(
-                        "durationMinutes",
-                        clampReminderDuration(Number(event.currentTarget.value)),
-                      )
-                    }
-                  />
-                  <small className="field-hint">填 0 表示持续显示，直到手动关闭。</small>
-                </label>
               </div>
             )}
 
@@ -1504,6 +1835,38 @@ function App() {
               </div>
             )}
           </section>
+
+          {pendingReminderDelete && (
+            <div className="confirmation-backdrop" role="presentation">
+              <section
+                className="confirmation-dialog"
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="delete-reminder-title"
+              >
+                <div className="confirmation-icon" aria-hidden="true">
+                  <Trash2 size={18} />
+                </div>
+                <div>
+                  <h2 id="delete-reminder-title">删除提醒？</h2>
+                  <p>{pendingReminderDelete.config.title}</p>
+                </div>
+                <div className="confirmation-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => setPendingReminderDeleteId(null)}
+                  >
+                    取消
+                  </button>
+                  <button className="danger-button" type="button" onClick={confirmReminderDeletion}>
+                    <Trash2 size={15} />
+                    <span>删除</span>
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
         </section>
       )}
     </main>
@@ -1639,35 +2002,19 @@ function normalizeEventState(event: CodexEvent): PetState | null {
   }
 }
 
-async function resizeWindow(
-  settingsOpen: boolean,
-  petSize: number,
-  returnPosition: PhysicalPosition | null,
+async function resizePetWindow(
+  containerWidth: number,
+  containerHeight: number,
   bubbleReserve: number,
   previousBubbleReserve: number,
-  returnBubbleReserve: number,
 ) {
   if (!isTauriRuntime) {
     return;
   }
 
   const appWindow = getCurrentWindow();
-  if (settingsOpen) {
-    const settingsSize = settingsWindowSize(petSize);
-    await appWindow.setSize(new LogicalSize(settingsSize.width, settingsSize.height));
-    if (returnPosition) {
-      const nextPosition = await anchoredSettingsWindowPosition(returnPosition, petSize, returnBubbleReserve);
-      await appWindow.setPosition(nextPosition);
-    } else {
-      await appWindow.center();
-    }
-    return;
-  }
-
-  await appWindow.setSize(new LogicalSize(petSize + windowPadding, petSize + windowPadding + bubbleReserve));
-  if (returnPosition) {
-    await appWindow.setPosition(returnPosition);
-  } else if (bubbleReserve !== previousBubbleReserve) {
+  await appWindow.setSize(new LogicalSize(containerWidth, containerHeight + bubbleReserve));
+  if (bubbleReserve !== previousBubbleReserve) {
     const position = await appWindow.outerPosition();
     await appWindow.setPosition(new PhysicalPosition(position.x, position.y - (bubbleReserve - previousBubbleReserve)));
   }
@@ -1693,42 +2040,6 @@ function modalViewportBounds(width: number, height: number): DragBounds {
     maxX: Math.max(minX, window.innerWidth - width - minX),
     maxY: Math.max(minY, window.innerHeight - height - minY),
   };
-}
-
-function settingsWindowSize(petSize: number) {
-  const petWindowWidth = petSize + windowPadding;
-  const petWindowHeight = petSize + windowPadding + petBubbleReserve;
-  return {
-    width: settingsWidth + petWindowWidth + settingsPreviewGap,
-    height: Math.max(settingsHeight, petWindowHeight),
-  };
-}
-
-async function anchoredSettingsWindowPosition(
-  returnPosition: PhysicalPosition,
-  petSize: number,
-  bubbleReserve: number,
-) {
-  const compactWidth = petSize + windowPadding;
-  const compactHeight = petSize + windowPadding + bubbleReserve;
-  const expandedSize = settingsWindowSize(petSize);
-  const monitor = await currentMonitor().then((value) => value ?? primaryMonitor());
-  const rawX = returnPosition.x + compactWidth - expandedSize.width;
-  const rawY = returnPosition.y + compactHeight - expandedSize.height;
-
-  if (!monitor) {
-    return new PhysicalPosition(rawX, rawY);
-  }
-
-  const minX = monitor.workArea.position.x;
-  const minY = monitor.workArea.position.y;
-  const maxX = Math.max(minX, minX + monitor.workArea.size.width - expandedSize.width);
-  const maxY = Math.max(minY, minY + monitor.workArea.size.height - expandedSize.height);
-
-  return new PhysicalPosition(
-    clamp(rawX, minX, maxX),
-    clamp(rawY, minY, maxY),
-  );
 }
 
 async function modalMonitorBounds(width: number, height: number): Promise<DragBounds> {
@@ -1822,22 +2133,34 @@ function formatReminderSchedule(timestamp: number | null, enabled: boolean) {
   }).format(date);
 }
 
-function readReminderConfig(): ReminderConfig {
+function readReminderSnapshots(): ReminderSnapshot[] {
   const stored = localStorage.getItem(reminderConfigKey);
   if (!stored) {
-    return defaultReminderConfig;
+    return upsertReminderSnapshot([], defaultReminderConfig);
   }
 
   try {
-    const parsed = JSON.parse(stored) as Partial<ReminderConfig>;
-    return normalizeReminderConfig(parsed);
+    const parsed = JSON.parse(stored) as Record<string, unknown>;
+    const rawReminders = Array.isArray(parsed.reminders)
+      ? (parsed.reminders as Partial<ReminderConfig>[])
+      : [parsed as Partial<ReminderConfig>];
+    return normalizeReminderSnapshots(
+      rawReminders.map((config) => {
+        const normalized = normalizeReminderConfig(config);
+        return {
+          config: normalized,
+          nextReminderAt: nextReminderDate(normalized)?.getTime() ?? null,
+        };
+      }),
+    );
   } catch {
-    return defaultReminderConfig;
+    return upsertReminderSnapshot([], defaultReminderConfig);
   }
 }
 
 function normalizeReminderConfig(config: Partial<ReminderConfig>): ReminderConfig {
   return {
+    id: normalizeReminderId(config.id),
     enabled: Boolean(config.enabled),
     title: typeof config.title === "string" ? config.title : defaultReminderConfig.title,
     message: typeof config.message === "string" ? config.message : defaultReminderConfig.message,
@@ -1845,6 +2168,75 @@ function normalizeReminderConfig(config: Partial<ReminderConfig>): ReminderConfi
     time: normalizeReminderTime(typeof config.time === "string" ? config.time : defaultReminderConfig.time),
     durationMinutes: clampReminderDuration(Number(config.durationMinutes)),
   };
+}
+
+function normalizeReminderSnapshots(reminders: ReminderSnapshot[]): ReminderSnapshot[] {
+  const ids = new Set<string>();
+  const normalized: ReminderSnapshot[] = [];
+  for (const reminder of reminders) {
+    const config = normalizeReminderConfig(reminder.config);
+    if (ids.has(config.id)) {
+      continue;
+    }
+    ids.add(config.id);
+    normalized.push({
+      config,
+      nextReminderAt:
+        typeof reminder.nextReminderAt === "number" && Number.isFinite(reminder.nextReminderAt)
+          ? reminder.nextReminderAt
+          : nextReminderDate(config)?.getTime() ?? null,
+    });
+  }
+  return normalized;
+}
+
+function upsertReminderSnapshot(
+  reminders: ReminderSnapshot[],
+  nextConfig: ReminderConfig,
+): ReminderSnapshot[] {
+  const config = normalizeReminderConfig(nextConfig);
+  const snapshot = {
+    config,
+    nextReminderAt: nextReminderDate(config)?.getTime() ?? null,
+  };
+  const index = reminders.findIndex((reminder) => reminder.config.id === config.id);
+  if (index === -1) {
+    return [...reminders, snapshot];
+  }
+  return reminders.map((reminder, reminderIndex) =>
+    reminderIndex === index ? snapshot : reminder,
+  );
+}
+
+function findNextReminder(reminders: ReminderSnapshot[]) {
+  return reminders.reduce<{ config: ReminderConfig; nextReminderAt: number } | null>((earliest, reminder) => {
+    const nextReminderAt = nextReminderDate(reminder.config)?.getTime() ?? null;
+    if (nextReminderAt === null) {
+      return earliest;
+    }
+    if (!earliest || earliest.nextReminderAt === null || nextReminderAt < earliest.nextReminderAt) {
+      return { config: reminder.config, nextReminderAt };
+    }
+    return earliest;
+  }, null);
+}
+
+let reminderIdSequence = 0;
+
+function createReminderConfig(): ReminderConfig {
+  reminderIdSequence += 1;
+  return {
+    ...defaultReminderConfig,
+    id: `reminder-${Date.now()}-${reminderIdSequence}`,
+  };
+}
+
+function normalizeReminderId(value: string | undefined) {
+  const normalized = (value ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 64);
+  return normalized || "reminder-migrated";
 }
 
 function nextReminderDate(config: ReminderConfig, now = new Date()) {
@@ -1908,7 +2300,20 @@ function clampReminderWeekday(value: number) {
 }
 
 function readPetSize() {
-  return clampPetSize(Number(localStorage.getItem(petSizeKey)));
+  const stored = localStorage.getItem(petSizeKey);
+  return stored === null ? defaultPetSize : clampPetSize(Number(stored));
+}
+
+function readPetContainerDimension(key: string, fallback: number) {
+  const stored = localStorage.getItem(key);
+  return stored === null ? fallback : clampPetContainerDimension(Number(stored));
+}
+
+function clampPetContainerDimension(value: number) {
+  if (!Number.isFinite(value)) {
+    return defaultPetContainerWidth;
+  }
+  return clamp(Math.round(value), minPetContainerDimension, maxPetContainerDimension);
 }
 
 function readPetOffset(key: string, fallback: number) {
@@ -1928,6 +2333,18 @@ function clampPetOffset(value: number) {
     return 0;
   }
   return clamp(Math.round(value), -petVisualOffsetLimit, petVisualOffsetLimit);
+}
+
+function normalizePetPreferences(preferences: PetPreferences): PetPreferences {
+  return {
+    petSize: clampPetSize(Number(preferences.petSize)),
+    petContainerWidth: clampPetContainerDimension(Number(preferences.petContainerWidth)),
+    petContainerHeight: clampPetContainerDimension(Number(preferences.petContainerHeight)),
+    petOffsetX: clampPetOffset(Number(preferences.petOffsetX)),
+    petOffsetY: clampPetOffset(Number(preferences.petOffsetY)),
+    renderMode: preferences.renderMode === "pixelated" ? "pixelated" : "smooth",
+    packagePath: typeof preferences.packagePath === "string" ? preferences.packagePath : "",
+  };
 }
 
 function normalizeBubbleMessage(message: string, fallback: string) {

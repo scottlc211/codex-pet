@@ -11,15 +11,16 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
+    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
 use zip::ZipArchive;
@@ -27,6 +28,7 @@ use zip::ZipArchive;
 static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 static REMINDER_SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);
 static IMPORT_RUNNING: AtomicBool = AtomicBool::new(false);
+static REMINDER_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const ACTIVE_SESSION_WINDOW_MS: u128 = 10 * 60 * 1000;
 const POLL_INTERVAL: Duration = Duration::from_millis(1500);
@@ -102,6 +104,8 @@ struct TerminalOption {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReminderConfig {
+    #[serde(default = "new_reminder_id")]
+    id: String,
     enabled: bool,
     title: String,
     message: String,
@@ -110,25 +114,42 @@ struct ReminderConfig {
     duration_minutes: u32,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReminderStore {
+    reminders: Vec<ReminderConfig>,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ReminderStateSnapshot {
+struct ReminderSnapshot {
     config: ReminderConfig,
     next_reminder_at: Option<i64>,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ReminderStateSnapshot {
+    reminders: Vec<ReminderSnapshot>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ReminderEvent {
+    reminder_id: String,
     title: String,
     message: String,
     duration_minutes: u32,
     next_reminder_at: Option<i64>,
 }
 
-struct ReminderState {
+struct ScheduledReminder {
     config: ReminderConfig,
     next_reminder_at: Option<i64>,
+}
+
+struct ReminderState {
+    reminders: Vec<ScheduledReminder>,
     generation: u64,
 }
 
@@ -251,6 +272,7 @@ const ATLAS_ROWS: &[AtlasRow] = &[
 impl Default for ReminderConfig {
     fn default() -> Self {
         Self {
+            id: new_reminder_id(),
             enabled: false,
             title: DEFAULT_REMINDER_TITLE.to_string(),
             message: DEFAULT_REMINDER_MESSAGE.to_string(),
@@ -263,12 +285,18 @@ impl Default for ReminderConfig {
 
 impl ReminderManager {
     fn new() -> Self {
-        let config = read_reminder_config_from_disk().unwrap_or_default();
-        let next_reminder_at = next_reminder_timestamp(&config);
+        let configs =
+            read_reminder_configs_from_disk().unwrap_or_else(|| vec![ReminderConfig::default()]);
+        let reminders = configs
+            .into_iter()
+            .map(|config| ScheduledReminder {
+                next_reminder_at: next_reminder_timestamp(&config),
+                config,
+            })
+            .collect();
         Self {
             state: Mutex::new(ReminderState {
-                config,
-                next_reminder_at,
+                reminders,
                 generation: 0,
             }),
         }
@@ -276,24 +304,68 @@ impl ReminderManager {
 
     fn snapshot(&self) -> ReminderStateSnapshot {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        ReminderStateSnapshot {
-            config: state.config.clone(),
-            next_reminder_at: state.next_reminder_at,
-        }
+        reminder_state_snapshot(&state)
     }
 
-    fn save(&self, config: ReminderConfig) -> Result<ReminderStateSnapshot, String> {
+    fn upsert(&self, config: ReminderConfig) -> Result<ReminderStateSnapshot, String> {
         let config = normalize_reminder_config(config);
-        write_reminder_config_to_disk(&config)?;
-        let next_reminder_at = next_reminder_timestamp(&config);
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.config = config.clone();
-        state.next_reminder_at = next_reminder_at;
+        let mut configs = state
+            .reminders
+            .iter()
+            .map(|reminder| reminder.config.clone())
+            .collect::<Vec<_>>();
+        if let Some(existing) = configs.iter_mut().find(|existing| existing.id == config.id) {
+            *existing = config;
+        } else {
+            configs.push(config);
+        }
+        write_reminder_configs_to_disk(&configs)?;
+        state.reminders = configs
+            .into_iter()
+            .map(|config| ScheduledReminder {
+                next_reminder_at: next_reminder_timestamp(&config),
+                config,
+            })
+            .collect();
         state.generation = state.generation.wrapping_add(1);
-        Ok(ReminderStateSnapshot {
-            config,
-            next_reminder_at,
-        })
+        Ok(reminder_state_snapshot(&state))
+    }
+
+    fn delete(&self, reminder_id: &str) -> Result<ReminderStateSnapshot, String> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let configs = state
+            .reminders
+            .iter()
+            .filter(|reminder| reminder.config.id != reminder_id)
+            .map(|reminder| reminder.config.clone())
+            .collect::<Vec<_>>();
+        if configs.len() == state.reminders.len() {
+            return Err("未找到要删除的提醒任务".to_string());
+        }
+        write_reminder_configs_to_disk(&configs)?;
+        state.reminders = configs
+            .into_iter()
+            .map(|config| ScheduledReminder {
+                next_reminder_at: next_reminder_timestamp(&config),
+                config,
+            })
+            .collect();
+        state.generation = state.generation.wrapping_add(1);
+        Ok(reminder_state_snapshot(&state))
+    }
+}
+
+fn reminder_state_snapshot(state: &ReminderState) -> ReminderStateSnapshot {
+    ReminderStateSnapshot {
+        reminders: state
+            .reminders
+            .iter()
+            .map(|reminder| ReminderSnapshot {
+                config: reminder.config.clone(),
+                next_reminder_at: reminder.next_reminder_at,
+            })
+            .collect(),
     }
 }
 
@@ -587,7 +659,18 @@ fn save_reminder_config(
     manager: State<ReminderManager>,
     config: ReminderConfig,
 ) -> Result<ReminderStateSnapshot, String> {
-    let snapshot = manager.save(config)?;
+    let snapshot = manager.upsert(config)?;
+    let _ = app.emit("reminder-state-updated", &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn delete_reminder_config(
+    app: AppHandle,
+    manager: State<ReminderManager>,
+    reminder_id: String,
+) -> Result<ReminderStateSnapshot, String> {
+    let snapshot = manager.delete(&reminder_id)?;
     let _ = app.emit("reminder-state-updated", &snapshot);
     Ok(snapshot)
 }
@@ -602,6 +685,26 @@ fn preview_reminder(app: AppHandle, config: ReminderConfig) -> Result<(), String
 #[tauri::command]
 fn restore_main_window(app: AppHandle) -> Result<(), String> {
     restore_main_window_state(&app)
+}
+
+#[tauri::command]
+fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    open_settings_window_state(&app)
+}
+
+#[tauri::command]
+fn hide_settings_window(app: AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("settings") else {
+        return Err("未找到设置窗口".to_string());
+    };
+    window
+        .hide()
+        .map_err(|error| format!("隐藏设置窗口失败：{error}"))
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 fn emit_codex_event(
@@ -671,30 +774,35 @@ fn start_reminder_scheduler(app: AppHandle) {
     }
 
     thread::spawn(move || loop {
-        let due = {
+        let due_reminders = {
             let manager = app.state::<ReminderManager>();
             let mut state = manager
                 .state
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             let now = Local::now().timestamp_millis();
-            if state.next_reminder_at.is_none() {
-                state.next_reminder_at = next_reminder_timestamp(&state.config);
-            }
-
-            match state.next_reminder_at {
-                Some(trigger_at) if trigger_at <= now => {
-                    let config = state.config.clone();
-                    let next_reminder_at = next_reminder_timestamp(&config);
-                    state.next_reminder_at = next_reminder_at;
-                    state.generation = state.generation.wrapping_add(1);
-                    Some((config, next_reminder_at))
+            let mut due = Vec::new();
+            for reminder in &mut state.reminders {
+                if reminder.next_reminder_at.is_none() {
+                    reminder.next_reminder_at = next_reminder_timestamp(&reminder.config);
                 }
-                _ => None,
+                if reminder
+                    .next_reminder_at
+                    .is_some_and(|trigger_at| trigger_at <= now)
+                {
+                    let config = reminder.config.clone();
+                    let next_reminder_at = next_reminder_timestamp(&config);
+                    reminder.next_reminder_at = next_reminder_at;
+                    due.push((config, next_reminder_at));
+                }
             }
+            if !due.is_empty() {
+                state.generation = state.generation.wrapping_add(1);
+            }
+            due
         };
 
-        if let Some((config, next_reminder_at)) = due {
+        for (config, next_reminder_at) in due_reminders {
             emit_reminder_event(&app, &config, next_reminder_at, true);
         }
 
@@ -711,6 +819,7 @@ fn emit_reminder_event(
     let title = normalized_reminder_title(&config.title);
     let message = normalized_reminder_message(&config.message);
     let payload = ReminderEvent {
+        reminder_id: config.id.clone(),
         title: title.clone(),
         message: message.clone(),
         duration_minutes: config.duration_minutes,
@@ -742,20 +851,50 @@ fn restore_main_window_state(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn read_reminder_config_from_disk() -> Option<ReminderConfig> {
-    let path = reminder_config_path()?;
-    let text = fs::read_to_string(path).ok()?;
-    serde_json::from_str::<ReminderConfig>(&text)
-        .ok()
-        .map(normalize_reminder_config)
+fn open_settings_window_state(app: &AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("settings") else {
+        return Err("未找到设置窗口".to_string());
+    };
+    let is_visible = window.is_visible().unwrap_or(false);
+    let _ = window.unminimize();
+    if !is_visible {
+        let _ = window.center();
+    }
+    window
+        .show()
+        .map_err(|error| format!("显示设置窗口失败：{error}"))?;
+    window
+        .set_focus()
+        .map_err(|error| format!("聚焦设置窗口失败：{error}"))
 }
 
-fn write_reminder_config_to_disk(config: &ReminderConfig) -> Result<(), String> {
+fn read_reminder_configs_from_disk() -> Option<Vec<ReminderConfig>> {
+    let path = reminder_config_path()?;
+    let text = fs::read_to_string(path).ok()?;
+    parse_reminder_configs(&text)
+}
+
+fn parse_reminder_configs(text: &str) -> Option<Vec<ReminderConfig>> {
+    let value = serde_json::from_str::<Value>(&text).ok()?;
+    let configs = if value.get("reminders").is_some() {
+        serde_json::from_value::<ReminderStore>(value)
+            .ok()?
+            .reminders
+    } else {
+        vec![serde_json::from_value::<ReminderConfig>(value).ok()?]
+    };
+    Some(normalize_reminder_configs(configs))
+}
+
+fn write_reminder_configs_to_disk(configs: &[ReminderConfig]) -> Result<(), String> {
     let path = reminder_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建提醒配置目录失败：{error}"))?;
     }
-    let text = serde_json::to_string_pretty(config)
+    let store = ReminderStore {
+        reminders: configs.to_vec(),
+    };
+    let text = serde_json::to_string_pretty(&store)
         .map_err(|error| format!("序列化提醒配置失败：{error}"))?;
     fs::write(path, text).map_err(|error| format!("写入提醒配置失败：{error}"))
 }
@@ -766,6 +905,7 @@ fn reminder_config_path() -> Option<PathBuf> {
 
 fn normalize_reminder_config(config: ReminderConfig) -> ReminderConfig {
     ReminderConfig {
+        id: normalize_reminder_id(&config.id),
         enabled: config.enabled,
         title: normalized_reminder_title(&config.title),
         message: normalized_reminder_message(&config.message),
@@ -773,6 +913,38 @@ fn normalize_reminder_config(config: ReminderConfig) -> ReminderConfig {
         time: normalize_reminder_time(&config.time),
         duration_minutes: config.duration_minutes.min(MAX_REMINDER_DURATION_MINUTES),
     }
+}
+
+fn normalize_reminder_configs(configs: Vec<ReminderConfig>) -> Vec<ReminderConfig> {
+    let mut ids = HashSet::new();
+    configs
+        .into_iter()
+        .map(normalize_reminder_config)
+        .filter(|config| ids.insert(config.id.clone()))
+        .collect()
+}
+
+fn normalize_reminder_id(value: &str) -> String {
+    let normalized = value
+        .trim()
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .take(64)
+        .collect::<String>();
+    if normalized.is_empty() {
+        new_reminder_id()
+    } else {
+        normalized
+    }
+}
+
+fn new_reminder_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let sequence = REMINDER_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("reminder-{timestamp}-{sequence}")
 }
 
 fn normalized_reminder_title(value: &str) -> String {
@@ -2437,7 +2609,20 @@ pub fn run() {
         .setup(|app| {
             let _ = app.notification().request_permission();
             start_reminder_scheduler(app.handle().clone());
-            let _tray = TrayIconBuilder::new()
+            let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&settings_item, &quit_item])?;
+            let mut tray_builder = TrayIconBuilder::with_id("main")
+                .tooltip("Codex Pet")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "settings" => {
+                        let _ = open_settings_window_state(app);
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -2447,9 +2632,20 @@ pub fn run() {
                     {
                         let _ = restore_main_window_state(tray.app_handle());
                     }
-                })
-                .build(app)?;
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+            let _tray = tray_builder.build(app)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "settings" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             find_pet_candidates,
@@ -2460,8 +2656,12 @@ pub fn run() {
             list_terminals,
             get_reminder_state,
             save_reminder_config,
+            delete_reminder_config,
             preview_reminder,
-            restore_main_window
+            restore_main_window,
+            open_settings_window,
+            hide_settings_window,
+            quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2490,6 +2690,57 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn reminder_parser_migrates_legacy_single_config() {
+        let legacy = r#"{
+            "enabled": true,
+            "title": "旧提醒",
+            "message": "保留原有配置",
+            "weekday": 3,
+            "time": "09:30",
+            "durationMinutes": 5
+        }"#;
+        let reminders = parse_reminder_configs(legacy).expect("parse legacy reminder");
+        assert_eq!(reminders.len(), 1);
+        assert_eq!(reminders[0].title, "旧提醒");
+        assert_eq!(reminders[0].weekday, 3);
+        assert!(!reminders[0].id.is_empty());
+    }
+
+    #[test]
+    fn reminder_parser_keeps_multiple_configs_and_empty_store() {
+        let multiple = r#"{
+            "reminders": [
+                {
+                    "id": "morning",
+                    "enabled": true,
+                    "title": "晨会",
+                    "message": "准备晨会",
+                    "weekday": 1,
+                    "time": "09:00",
+                    "durationMinutes": 0
+                },
+                {
+                    "id": "review",
+                    "enabled": false,
+                    "title": "复盘",
+                    "message": "整理本周进展",
+                    "weekday": 5,
+                    "time": "17:30",
+                    "durationMinutes": 10
+                }
+            ]
+        }"#;
+        let reminders = parse_reminder_configs(multiple).expect("parse reminder list");
+        assert_eq!(reminders.len(), 2);
+        assert_eq!(reminders[0].id, "morning");
+        assert_eq!(reminders[1].id, "review");
+
+        let empty =
+            parse_reminder_configs(r#"{"reminders": []}"#).expect("parse empty reminder list");
+        assert!(empty.is_empty());
     }
 
     #[test]
