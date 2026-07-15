@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -93,7 +93,7 @@ fn backup_path(path: &Path) -> PathBuf {
 
 #[cfg(unix)]
 fn sync_parent_directory(parent: &Path) -> Result<(), String> {
-    File::open(parent)
+    fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("同步配置目录失败：{error}"))
 }

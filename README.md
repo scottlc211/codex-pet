@@ -29,8 +29,8 @@ src-tauri/                Tauri / Rust 后端
 
 通用工具版本：
 
-- Node.js 22
-- pnpm 10
+- Node.js 22.13+
+- pnpm 11.13.0
 - Rust 1.97.0，项目通过 `rust-toolchain.toml` 固定
 
 Windows 还需要安装：
