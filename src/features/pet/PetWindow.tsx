@@ -1,5 +1,5 @@
 import type { MouseEventHandler, PointerEventHandler } from "react";
-import { MousePointer2, MousePointer2Off, Power, Settings, X } from "lucide-react";
+import { EyeOff, MousePointer2, MousePointer2Off, Power, Settings, X } from "lucide-react";
 import type { RenderMode } from "../../config/preferences";
 import { PetVisualView } from "./PetVisualView";
 import type { PetState, PetVisual } from "./model";
@@ -27,6 +27,7 @@ type PetWindowProps = {
   onContextMenu: MouseEventHandler<HTMLElement>;
   onCloseBubble: () => void;
   onOpenSettings: () => void;
+  onHidePet: () => void;
   onToggleClickThrough: () => void;
   onQuit: () => void;
 };
@@ -46,6 +47,7 @@ export function PetWindow({
   onContextMenu,
   onCloseBubble,
   onOpenSettings,
+  onHidePet,
   onToggleClickThrough,
   onQuit,
 }: PetWindowProps) {
@@ -106,6 +108,10 @@ export function PetWindow({
           <button type="button" role="menuitem" onClick={onOpenSettings}>
             <Settings size={16} />
             <span>设置</span>
+          </button>
+          <button type="button" role="menuitem" onClick={onHidePet}>
+            <EyeOff size={16} />
+            <span>隐藏桌宠</span>
           </button>
           <button type="button" role="menuitem" onClick={onToggleClickThrough}>
             {clickThrough ? <MousePointer2 size={16} /> : <MousePointer2Off size={16} />}

@@ -3,6 +3,7 @@ import {
   classifyReminderLateness,
   defaultReminderConfig,
   nextReminderDate,
+  normalizeReminderConfig,
   previousReminderDate,
   readReminderSnapshots,
   reminderConfigKey,
@@ -43,9 +44,40 @@ describe("reminder model", () => {
       id: "reminder-migrated",
       enabled: true,
       title: "Review",
+      scheduleType: "weekly",
       weekday: 1,
+      date: "",
       time: "09:30",
     });
+  });
+
+  it("schedules a one-time reminder only on its selected date", () => {
+    const config = {
+      ...defaultReminderConfig,
+      enabled: true,
+      scheduleType: "once" as const,
+      date: "2024-01-02",
+      time: "11:00",
+    };
+    const scheduled = new Date(2024, 0, 2, 11, 0);
+
+    expect(nextReminderDate(config, new Date(2024, 0, 1, 12, 0))?.getTime()).toBe(
+      scheduled.getTime(),
+    );
+    expect(nextReminderDate(config, new Date(2024, 0, 2, 12, 0))).toBeNull();
+    expect(previousReminderDate(config, new Date(2024, 0, 2, 12, 0))?.getTime()).toBe(
+      scheduled.getTime(),
+    );
+  });
+
+  it("normalizes invalid one-time dates without guessing another date", () => {
+    expect(
+      normalizeReminderConfig({
+        ...defaultReminderConfig,
+        scheduleType: "once",
+        date: "2024-02-31",
+      }).date,
+    ).toBe("");
   });
 
   it("schedules later today or the same weekday next week", () => {

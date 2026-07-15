@@ -1,10 +1,10 @@
 use crate::{
     diagnostics, home_dir,
     storage::{read_with_backup_status, write_json_atomically_with_backup_policy, RecoverySource},
-    windows::restore_main_window_state,
 };
 use chrono::{
-    DateTime, Datelike, Duration as ChronoDuration, Local, LocalResult, NaiveTime, TimeZone,
+    DateTime, Datelike, Duration as ChronoDuration, Local, LocalResult, NaiveDate, NaiveTime,
+    TimeZone,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,6 +33,14 @@ const MAX_MESSAGE_CHARS: usize = 1000;
 const ON_TIME_WINDOW_MS: i64 = 60 * 1000;
 const CATCH_UP_WINDOW_MS: i64 = 30 * 60 * 1000;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ReminderScheduleType {
+    #[default]
+    Weekly,
+    Once,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReminderConfig {
@@ -41,7 +49,11 @@ pub(crate) struct ReminderConfig {
     enabled: bool,
     title: String,
     message: String,
+    #[serde(default)]
+    schedule_type: ReminderScheduleType,
     weekday: u8,
+    #[serde(default)]
+    date: String,
     time: String,
     duration_minutes: u32,
 }
@@ -134,7 +146,9 @@ impl Default for ReminderConfig {
             enabled: false,
             title: DEFAULT_TITLE.to_string(),
             message: DEFAULT_MESSAGE.to_string(),
+            schedule_type: ReminderScheduleType::Weekly,
             weekday: DEFAULT_WEEKDAY,
+            date: String::new(),
             time: DEFAULT_TIME.to_string(),
             duration_minutes: 0,
         }
@@ -192,12 +206,15 @@ impl ReminderManager {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let mut reminders = state.reminders.clone();
         let now = Local::now();
+        validate_reminder_schedule(&config, &now)?;
         if let Some(existing) = reminders
             .iter_mut()
             .find(|existing| existing.config.id == config.id)
         {
             let schedule_changed = existing.config.enabled != config.enabled
+                || existing.config.schedule_type != config.schedule_type
                 || existing.config.weekday != config.weekday
+                || existing.config.date != config.date
                 || existing.config.time != config.time;
             existing.config = config;
             if schedule_changed {
@@ -363,7 +380,7 @@ pub(crate) fn preview_reminder(app: AppHandle, config: ReminderConfig) -> Result
         "preview",
         false,
     );
-    restore_main_window_state(&app)
+    Ok(())
 }
 
 pub(crate) fn start_reminder_scheduler(app: AppHandle) {
@@ -433,19 +450,30 @@ fn process_due_reminders(
             .last_handled_at
             .is_some_and(|handled_at| handled_at >= trigger_at)
         {
-            reminder.next_reminder_at = next_reminder_timestamp_from(&reminder.config, now);
+            if reminder.config.schedule_type == ReminderScheduleType::Once {
+                reminder.config.enabled = false;
+                reminder.next_reminder_at = None;
+            } else {
+                reminder.next_reminder_at = next_reminder_timestamp_from(&reminder.config, now);
+            }
             changed = true;
             continue;
         }
 
         let (status, trigger_kind) = classify_due_reminder(now_ms - trigger_at);
+        let due_config = reminder.config.clone();
         reminder.last_handled_at = Some(trigger_at);
         reminder.last_status = status;
-        reminder.next_reminder_at = next_reminder_timestamp_from(&reminder.config, now);
+        if reminder.config.schedule_type == ReminderScheduleType::Once {
+            reminder.config.enabled = false;
+            reminder.next_reminder_at = None;
+        } else {
+            reminder.next_reminder_at = next_reminder_timestamp_from(&reminder.config, now);
+        }
         changed = true;
         if let Some(trigger_kind) = trigger_kind {
             due.push((
-                reminder.config.clone(),
+                due_config,
                 reminder.next_reminder_at,
                 trigger_at,
                 trigger_kind,
@@ -481,7 +509,7 @@ fn emit_reminder_event(
 
     let _ = app.emit("reminder-triggered", payload);
     if notify {
-        let _ = restore_main_window_state(app);
+        // 尊重用户对桌宠可见性的选择，提醒仅发送事件和系统通知。
         let _ = app
             .notification()
             .builder()
@@ -552,7 +580,9 @@ fn normalize_reminder_config(config: ReminderConfig) -> ReminderConfig {
         enabled: config.enabled,
         title: normalized_reminder_title(&config.title),
         message: normalized_reminder_message(&config.message),
+        schedule_type: config.schedule_type,
         weekday: normalize_reminder_weekday(config.weekday),
+        date: normalize_reminder_date(&config.date),
         time: normalize_reminder_time(&config.time),
         duration_minutes: config.duration_minutes.min(MAX_DURATION_MINUTES),
     }
@@ -570,11 +600,11 @@ fn scheduled_reminder_from_stored(
     stored: StoredReminder,
     now: &DateTime<Local>,
 ) -> ScheduledReminder {
-    let config = normalize_reminder_config(stored.config);
+    let mut config = normalize_reminder_config(stored.config);
     let last_handled_at = stored
         .last_handled_at
         .or_else(|| Some(now.timestamp_millis()));
-    let next_reminder_at = if config.enabled {
+    let mut next_reminder_at = if config.enabled {
         let previous = previous_reminder_timestamp_from(&config, now);
         if previous.is_some_and(|scheduled_at| {
             stored
@@ -588,6 +618,17 @@ fn scheduled_reminder_from_stored(
     } else {
         None
     };
+    if config.schedule_type == ReminderScheduleType::Once
+        && previous_reminder_timestamp_from(&config, now).is_some_and(|scheduled_at| {
+            last_handled_at.is_some_and(|handled_at| handled_at >= scheduled_at)
+                && !stored
+                    .last_handled_at
+                    .is_some_and(|handled_at| handled_at < scheduled_at)
+        })
+    {
+        config.enabled = false;
+        next_reminder_at = None;
+    }
     ScheduledReminder {
         config,
         next_reminder_at,
@@ -687,8 +728,34 @@ fn normalize_reminder_time(value: &str) -> String {
     }
 }
 
+fn normalize_reminder_date(value: &str) -> String {
+    parse_reminder_date(value)
+        .map(|date| date.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
+}
+
+fn parse_reminder_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()
+}
+
 fn parse_reminder_time(value: &str) -> Option<NaiveTime> {
     NaiveTime::parse_from_str(value.trim(), "%H:%M").ok()
+}
+
+fn validate_reminder_schedule(
+    config: &ReminderConfig,
+    now: &DateTime<Local>,
+) -> Result<(), String> {
+    if !config.enabled || config.schedule_type == ReminderScheduleType::Weekly {
+        return Ok(());
+    }
+    if parse_reminder_date(&config.date).is_none() {
+        return Err("请选择具体提醒日期".to_string());
+    }
+    if next_reminder_timestamp_from(config, now).is_none() {
+        return Err("请选择当前时间之后的提醒日期和时间".to_string());
+    }
+    Ok(())
 }
 
 fn next_reminder_timestamp_from(config: &ReminderConfig, now: &DateTime<Local>) -> Option<i64> {
@@ -697,6 +764,11 @@ fn next_reminder_timestamp_from(config: &ReminderConfig, now: &DateTime<Local>) 
     }
 
     let time = parse_reminder_time(&config.time)?;
+    if config.schedule_type == ReminderScheduleType::Once {
+        let date = parse_reminder_date(&config.date)?;
+        return local_datetime_after(date, time, now).map(|value| value.timestamp_millis());
+    }
+
     let weekday = normalize_reminder_weekday(config.weekday) as u32;
     let today = now.date_naive();
 
@@ -706,12 +778,7 @@ fn next_reminder_timestamp_from(config: &ReminderConfig, now: &DateTime<Local>) 
             continue;
         }
 
-        let candidate = match Local.from_local_datetime(&date.and_time(time)) {
-            LocalResult::Single(value) => value,
-            LocalResult::Ambiguous(earliest, _) => earliest,
-            LocalResult::None => continue,
-        };
-        if candidate > *now {
+        if let Some(candidate) = local_datetime_after(date, time, now) {
             return Some(candidate.timestamp_millis());
         }
     }
@@ -725,6 +792,11 @@ fn previous_reminder_timestamp_from(config: &ReminderConfig, now: &DateTime<Loca
     }
 
     let time = parse_reminder_time(&config.time)?;
+    if config.schedule_type == ReminderScheduleType::Once {
+        let date = parse_reminder_date(&config.date)?;
+        return local_datetime_before_or_at(date, time, now).map(|value| value.timestamp_millis());
+    }
+
     let weekday = normalize_reminder_weekday(config.weekday) as u32;
     let today = now.date_naive();
 
@@ -734,17 +806,48 @@ fn previous_reminder_timestamp_from(config: &ReminderConfig, now: &DateTime<Loca
             continue;
         }
 
-        let candidate = match Local.from_local_datetime(&date.and_time(time)) {
-            LocalResult::Single(value) => value,
-            LocalResult::Ambiguous(_, latest) => latest,
-            LocalResult::None => continue,
-        };
-        if candidate <= *now {
+        if let Some(candidate) = local_datetime_before_or_at(date, time, now) {
             return Some(candidate.timestamp_millis());
         }
     }
 
     None
+}
+
+fn local_datetime_after(
+    date: NaiveDate,
+    time: NaiveTime,
+    now: &DateTime<Local>,
+) -> Option<DateTime<Local>> {
+    match Local.from_local_datetime(&date.and_time(time)) {
+        LocalResult::Single(value) => (value > *now).then_some(value),
+        LocalResult::Ambiguous(earliest, latest) => {
+            if earliest > *now {
+                Some(earliest)
+            } else {
+                (latest > *now).then_some(latest)
+            }
+        }
+        LocalResult::None => None,
+    }
+}
+
+fn local_datetime_before_or_at(
+    date: NaiveDate,
+    time: NaiveTime,
+    now: &DateTime<Local>,
+) -> Option<DateTime<Local>> {
+    match Local.from_local_datetime(&date.and_time(time)) {
+        LocalResult::Single(value) => (value <= *now).then_some(value),
+        LocalResult::Ambiguous(earliest, latest) => {
+            if latest <= *now {
+                Some(latest)
+            } else {
+                (earliest <= *now).then_some(earliest)
+            }
+        }
+        LocalResult::None => None,
+    }
 }
 
 #[cfg(test)]
@@ -764,8 +867,47 @@ mod tests {
         let reminders = parse_reminder_configs(legacy).expect("parse legacy reminder");
         assert_eq!(reminders.len(), 1);
         assert_eq!(reminders[0].config.title, "旧提醒");
+        assert_eq!(
+            reminders[0].config.schedule_type,
+            ReminderScheduleType::Weekly
+        );
         assert_eq!(reminders[0].config.weekday, 3);
+        assert!(reminders[0].config.date.is_empty());
         assert!(!reminders[0].config.id.is_empty());
+    }
+
+    #[test]
+    fn parser_and_scheduler_support_one_time_reminders() {
+        let stored = r#"{
+            "reminders": [{
+                "id": "appointment",
+                "enabled": true,
+                "title": "预约",
+                "message": "按时出发",
+                "scheduleType": "once",
+                "weekday": 0,
+                "date": "2026-07-16",
+                "time": "10:30",
+                "durationMinutes": 5,
+                "lastHandledAt": 1
+            }]
+        }"#;
+        let reminders = parse_reminder_configs(stored).expect("parse one-time reminder");
+        let config = &reminders[0].config;
+        let now = Local
+            .with_ymd_and_hms(2026, 7, 16, 9, 0, 0)
+            .single()
+            .expect("valid local date");
+
+        assert_eq!(config.schedule_type, ReminderScheduleType::Once);
+        assert_eq!(config.date, "2026-07-16");
+        assert_eq!(
+            next_reminder_timestamp_from(config, &now),
+            Local
+                .with_ymd_and_hms(2026, 7, 16, 10, 30, 0)
+                .single()
+                .map(|value| value.timestamp_millis())
+        );
     }
 
     #[test]
@@ -875,5 +1017,40 @@ mod tests {
         assert!(reminders
             .iter()
             .all(|reminder| reminder.last_status == ReminderRunStatus::Triggered));
+    }
+
+    #[test]
+    fn one_time_reminder_disables_itself_after_firing() {
+        let now = Local
+            .with_ymd_and_hms(2026, 7, 16, 10, 30, 10)
+            .single()
+            .expect("valid local date");
+        let trigger_at = Local
+            .with_ymd_and_hms(2026, 7, 16, 10, 30, 0)
+            .single()
+            .expect("valid reminder date")
+            .timestamp_millis();
+        let config = ReminderConfig {
+            enabled: true,
+            schedule_type: ReminderScheduleType::Once,
+            date: "2026-07-16".to_string(),
+            time: "10:30".to_string(),
+            ..ReminderConfig::default()
+        };
+        let mut reminders = vec![ScheduledReminder {
+            config,
+            next_reminder_at: Some(trigger_at),
+            last_handled_at: None,
+            last_status: ReminderRunStatus::Never,
+        }];
+
+        let (due, changed) = process_due_reminders(&mut reminders, &now);
+        let (second_due, _) = process_due_reminders(&mut reminders, &now);
+
+        assert!(changed);
+        assert_eq!(due.len(), 1);
+        assert!(second_due.is_empty());
+        assert!(!reminders[0].config.enabled);
+        assert!(reminders[0].next_reminder_at.is_none());
     }
 }

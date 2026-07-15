@@ -1,13 +1,28 @@
-import { Bell, Check, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Bell,
+  CalendarDays,
+  Check,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Repeat2,
+  Trash2,
+} from "lucide-react";
 import {
   clampReminderDuration,
   clampReminderWeekday,
+  defaultReminderDate,
+  formatReminderRule,
   formatReminderRunStatus,
   formatReminderSchedule,
+  isReminderScheduleValid,
   maxReminderDurationMinutes,
   maxReminderMessageCharacters,
+  nextReminderDate,
+  normalizeReminderDate,
   normalizeReminderTime,
   reminderWeekdayOptions,
+  todayReminderDate,
   type ReminderConfig,
   type ReminderSnapshot,
 } from "../reminders/model";
@@ -44,6 +59,12 @@ export function ReminderSettings({
   onPreview,
   onDraftChange,
 }: ReminderSettingsProps) {
+  const draftNextReminderAt = draft ? nextReminderDate(draft)?.getTime() ?? null : null;
+  const scheduleError =
+    draft?.enabled && !isReminderScheduleValid(draft)
+      ? "请选择当前时间之后的提醒日期和时间"
+      : null;
+
   return (
     <div className="settings-page reminder-page">
       <div className="section-title with-action">
@@ -71,7 +92,7 @@ export function ReminderSettings({
                 <span>
                   <strong>{snapshot.config.title}</strong>
                   <small>
-                    {formatReminderSchedule(snapshot.nextReminderAt, snapshot.config.enabled)} · {formatReminderRunStatus(snapshot)}
+                    {formatReminderRule(snapshot.config)} · {formatReminderRunStatus(snapshot)}
                   </small>
                 </span>
                 <Pencil size={14} />
@@ -94,15 +115,18 @@ export function ReminderSettings({
             <header className="reminder-editor-header">
               <div>
                 <strong>{savedDraft ? "编辑提醒" : "新建提醒"}</strong>
-                <span>
-                  {formatReminderSchedule(savedDraft?.nextReminderAt ?? null, draft.enabled)}
-                </span>
+                <span>{formatReminderRule(draft)}</span>
               </div>
               <div className="reminder-actions">
                 <button className="icon-button" type="button" title="还原当前提醒" onClick={onReset}>
                   <RefreshCw size={16} />
                 </button>
-                <button className="secondary-button" type="button" onClick={onSave}>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={Boolean(scheduleError)}
+                  onClick={onSave}
+                >
                   <Check size={15} />
                   <span>保存</span>
                 </button>
@@ -112,9 +136,7 @@ export function ReminderSettings({
             <div className="reminder-summary">
               <div>
                 <strong>下次提醒</strong>
-                <span>
-                  {formatReminderSchedule(savedDraft?.nextReminderAt ?? null, draft.enabled)}
-                </span>
+                <span>{formatReminderSchedule(draftNextReminderAt, draft.enabled)}</span>
               </div>
               <div>
                 <strong>最近状态</strong>
@@ -157,25 +179,84 @@ export function ReminderSettings({
               />
             </label>
 
-            <div className="reminder-grid">
-              <label className="field">
-                <span>提醒日期</span>
-                <select
-                  value={String(draft.weekday)}
-                  onChange={(event) =>
-                    onDraftChange(
-                      "weekday",
-                      clampReminderWeekday(Number(event.currentTarget.value)),
-                    )
-                  }
+            <div className="field reminder-schedule-type">
+              <span id={`reminder-schedule-type-${draft.id}`}>提醒方式</span>
+              <div
+                className="reminder-schedule-options"
+                role="group"
+                aria-labelledby={`reminder-schedule-type-${draft.id}`}
+              >
+                <button
+                  className={draft.scheduleType === "weekly" ? "active" : ""}
+                  type="button"
+                  aria-pressed={draft.scheduleType === "weekly"}
+                  onClick={() => onDraftChange("scheduleType", "weekly")}
                 >
-                  {reminderWeekdayOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  <Repeat2 size={15} aria-hidden="true" />
+                  每周
+                </button>
+                <button
+                  className={draft.scheduleType === "once" ? "active" : ""}
+                  type="button"
+                  aria-pressed={draft.scheduleType === "once"}
+                  onClick={() => {
+                    onDraftChange("scheduleType", "once");
+                    if (!draft.date) {
+                      onDraftChange("date", defaultReminderDate());
+                    }
+                  }}
+                >
+                  <CalendarDays size={15} aria-hidden="true" />
+                  指定日期
+                </button>
+              </div>
+            </div>
+
+            <div className="reminder-grid">
+              {draft.scheduleType === "weekly" ? (
+                <label className="field">
+                  <span>每周星期</span>
+                  <select
+                    value={String(draft.weekday)}
+                    onChange={(event) =>
+                      onDraftChange(
+                        "weekday",
+                        clampReminderWeekday(Number(event.currentTarget.value)),
+                      )
+                    }
+                  >
+                    {reminderWeekdayOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <label className="field">
+                  <span>具体日期</span>
+                  <input
+                    type="date"
+                    min={todayReminderDate()}
+                    value={draft.date}
+                    required={draft.enabled}
+                    aria-invalid={Boolean(scheduleError)}
+                    aria-describedby={scheduleError ? `reminder-schedule-error-${draft.id}` : undefined}
+                    onChange={(event) =>
+                      onDraftChange("date", normalizeReminderDate(event.currentTarget.value))
+                    }
+                  />
+                  {scheduleError && (
+                    <small
+                      className="field-error"
+                      id={`reminder-schedule-error-${draft.id}`}
+                      role="alert"
+                    >
+                      {scheduleError}
+                    </small>
+                  )}
+                </label>
+              )}
 
               <label className="field">
                 <span>提醒时间</span>

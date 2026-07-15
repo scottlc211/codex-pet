@@ -1,9 +1,13 @@
+export type ReminderScheduleType = "weekly" | "once";
+
 export type ReminderConfig = {
   id: string;
   enabled: boolean;
   title: string;
   message: string;
+  scheduleType: ReminderScheduleType;
   weekday: number;
+  date: string;
   time: string;
   durationMinutes: number;
 };
@@ -53,7 +57,9 @@ export const defaultReminderConfig: ReminderConfig = {
   enabled: false,
   title: "周报提醒",
   message: "老大，该写周报了。",
+  scheduleType: "weekly",
   weekday: 5,
+  date: "",
   time: "16:00",
   durationMinutes: 0,
 };
@@ -97,7 +103,7 @@ export function saveBrowserReminderSnapshots(
   try {
     storage.setItem(
       reminderConfigKey,
-      JSON.stringify({ schemaVersion: 2, snapshots: normalizeReminderSnapshots(reminders) }),
+      JSON.stringify({ schemaVersion: 3, snapshots: normalizeReminderSnapshots(reminders) }),
     );
     return null;
   } catch (error) {
@@ -111,7 +117,9 @@ export function normalizeReminderConfig(config: Partial<ReminderConfig>): Remind
     enabled: Boolean(config.enabled),
     title: typeof config.title === "string" ? config.title : defaultReminderConfig.title,
     message: typeof config.message === "string" ? config.message : defaultReminderConfig.message,
+    scheduleType: config.scheduleType === "once" ? "once" : "weekly",
     weekday: clampReminderWeekday(Number(config.weekday)),
+    date: normalizeReminderDate(typeof config.date === "string" ? config.date : ""),
     time: normalizeReminderTime(
       typeof config.time === "string" ? config.time : defaultReminderConfig.time,
     ),
@@ -156,7 +164,9 @@ export function upsertReminderSnapshot(
   const existing = reminders[index];
   const scheduleChanged =
     existing.config.enabled !== config.enabled ||
+    existing.config.scheduleType !== config.scheduleType ||
     existing.config.weekday !== config.weekday ||
+    existing.config.date !== config.date ||
     existing.config.time !== config.time;
   const snapshot: ReminderSnapshot = {
     config,
@@ -194,6 +204,7 @@ export function createReminderConfig(): ReminderConfig {
   return {
     ...defaultReminderConfig,
     id: `reminder-${Date.now()}-${reminderIdSequence}`,
+    date: defaultReminderDate(),
   };
 }
 
@@ -205,6 +216,11 @@ export function nextReminderDate(config: ReminderConfig, now = new Date()) {
   const [hour, minute] = parseReminderTime(config.time);
   if (hour === null || minute === null) {
     return null;
+  }
+
+  if (config.scheduleType === "once") {
+    const candidate = reminderDateTime(config.date, hour, minute);
+    return candidate && candidate.getTime() > now.getTime() ? candidate : null;
   }
 
   const next = new Date(now);
@@ -228,6 +244,11 @@ export function previousReminderDate(config: ReminderConfig, now = new Date()) {
   const [hour, minute] = parseReminderTime(config.time);
   if (hour === null || minute === null) {
     return null;
+  }
+
+  if (config.scheduleType === "once") {
+    const candidate = reminderDateTime(config.date, hour, minute);
+    return candidate && candidate.getTime() <= now.getTime() ? candidate : null;
   }
 
   const previous = new Date(now);
@@ -256,6 +277,25 @@ export function normalizeReminderTime(value: string) {
   }
 
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+export function normalizeReminderDate(value: string) {
+  const parts = parseReminderDate(value);
+  return parts ? formatReminderDateParts(parts) : "";
+}
+
+export function todayReminderDate(now = new Date()) {
+  return formatReminderDateValue(now);
+}
+
+export function defaultReminderDate(now = new Date()) {
+  const date = new Date(now);
+  date.setDate(date.getDate() + 1);
+  return formatReminderDateValue(date);
+}
+
+export function isReminderScheduleValid(config: ReminderConfig, now = new Date()) {
+  return !config.enabled || nextReminderDate(config, now) !== null;
 }
 
 export function clampReminderDuration(value: number) {
@@ -295,8 +335,31 @@ export function formatReminderSchedule(timestamp: number | null, enabled: boolea
   }).format(date);
 }
 
+export function formatReminderRule(config: ReminderConfig) {
+  if (config.scheduleType === "weekly") {
+    const weekday = reminderWeekdayOptions.find((option) => option.value === config.weekday);
+    return `每${weekday?.label ?? "周五"} ${config.time}`;
+  }
+
+  const parts = parseReminderDate(config.date);
+  if (!parts) {
+    return `指定日期 ${config.time}`;
+  }
+  const date = new Date(parts.year, parts.month - 1, parts.day);
+  const label = new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+  }).format(date);
+  return `${label} ${config.time}`;
+}
+
 export function formatReminderRunStatus(snapshot: ReminderSnapshot) {
   if (!snapshot.config.enabled) {
+    if (snapshot.config.scheduleType === "once" && snapshot.lastStatus !== "never") {
+      return formatHandledStatus("已完成", snapshot.lastHandledAt);
+    }
     return "已停用";
   }
   switch (snapshot.lastStatus) {
@@ -353,6 +416,17 @@ function reconcileReminderSnapshots(reminders: ReminderSnapshot[], now = new Dat
       };
     }
     const previous = previousReminderDate(snapshot.config, now)?.getTime() ?? null;
+    if (
+      snapshot.config.scheduleType === "once" &&
+      previous !== null &&
+      snapshot.lastHandledAt >= previous
+    ) {
+      return {
+        ...snapshot,
+        config: { ...snapshot.config, enabled: false },
+        nextReminderAt: null,
+      };
+    }
     return {
       ...snapshot,
       nextReminderAt:
@@ -408,6 +482,49 @@ function parseReminderTime(value: string): [number | null, number | null] {
   }
 
   return [hour, minute];
+}
+
+type ReminderDateParts = { year: number; month: number; day: number };
+
+function parseReminderDate(value: string): ReminderDateParts | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  const parts = { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+  const date = new Date(parts.year, parts.month - 1, parts.day);
+  return date.getFullYear() === parts.year &&
+    date.getMonth() === parts.month - 1 &&
+    date.getDate() === parts.day
+    ? parts
+    : null;
+}
+
+function reminderDateTime(value: string, hour: number, minute: number) {
+  const parts = parseReminderDate(value);
+  if (!parts) {
+    return null;
+  }
+  const date = new Date(parts.year, parts.month - 1, parts.day, hour, minute, 0, 0);
+  return date.getFullYear() === parts.year &&
+    date.getMonth() === parts.month - 1 &&
+    date.getDate() === parts.day &&
+    date.getHours() === hour &&
+    date.getMinutes() === minute
+    ? date
+    : null;
+}
+
+function formatReminderDateValue(value: Date) {
+  return formatReminderDateParts({
+    year: value.getFullYear(),
+    month: value.getMonth() + 1,
+    day: value.getDate(),
+  });
+}
+
+function formatReminderDateParts(parts: ReminderDateParts) {
+  return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
 }
 
 function clamp(value: number, min: number, max: number) {

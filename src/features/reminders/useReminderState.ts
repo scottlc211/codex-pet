@@ -8,6 +8,7 @@ import {
   createReminderConfig,
   defaultReminderConfig,
   findNextReminder,
+  isReminderScheduleValid,
   nextReminderDate,
   normalizeReminderConfig,
   normalizeReminderSnapshots,
@@ -94,12 +95,11 @@ export function useReminderState({
     const unlistenPromise = listen<ReminderEvent>("reminder-triggered", (event) => {
       const reminder = event.payload;
       callbacksRef.current.onTriggered({
+        ...defaultReminderConfig,
         id: reminder.reminderId,
         enabled: true,
         title: reminder.title,
         message: reminder.message,
-        weekday: defaultReminderConfig.weekday,
-        time: defaultReminderConfig.time,
         durationMinutes: reminder.durationMinutes,
       });
       const lastStatus = reminder.triggerKind;
@@ -157,13 +157,20 @@ export function useReminderState({
       }
       const nextNow = new Date(handledAt + 1000);
       setReminderSnapshots((current) =>
-        current.map((snapshot) =>
-          snapshot.config.id === nextReminder.config.id
-            ? {
-                ...snapshot,
-                nextReminderAt: nextReminderDate(snapshot.config, nextNow)?.getTime() ?? null,
-                lastHandledAt: nextReminder.nextReminderAt,
-                lastStatus,
+          current.map((snapshot) =>
+            snapshot.config.id === nextReminder.config.id
+              ? {
+                  ...snapshot,
+                  config:
+                    snapshot.config.scheduleType === "once"
+                      ? { ...snapshot.config, enabled: false }
+                      : snapshot.config,
+                  nextReminderAt:
+                    snapshot.config.scheduleType === "once"
+                      ? null
+                      : nextReminderDate(snapshot.config, nextNow)?.getTime() ?? null,
+                  lastHandledAt: nextReminder.nextReminderAt,
+                  lastStatus,
               }
             : snapshot,
         ),
@@ -204,6 +211,14 @@ export function useReminderState({
       return;
     }
     const nextConfig = normalizeReminderConfig(reminderDraft);
+    if (!isReminderScheduleValid(nextConfig)) {
+      callbacksRef.current.pushEvent({
+        kind: "reminder.schedule.error",
+        message: "请选择当前时间之后的提醒日期和时间",
+        state: "error",
+      });
+      return;
+    }
     setSelectedReminderId(nextConfig.id);
     if (!isTauriRuntime) {
       setReminderDraft(nextConfig);

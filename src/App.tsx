@@ -109,6 +109,7 @@ function App() {
   const [petOffsetX, setPetOffsetX] = useState(initialPreferences.pet.petOffsetX);
   const [petOffsetY, setPetOffsetY] = useState(initialPreferences.pet.petOffsetY);
   const [clickThrough, setClickThrough] = useState(initialPreferences.pet.clickThrough);
+  const [mainWindowVisible, setMainWindowVisible] = useState(true);
   const [renderMode, setRenderMode] = useState<RenderMode>(initialPreferences.pet.renderMode);
   const [terminalId, setTerminalId] = useState(initialPreferences.work.terminalId);
   const [taskTimeoutMinutes, setTaskTimeoutMinutes] = useState(
@@ -246,9 +247,23 @@ function App() {
     const unlistenTrayTogglePromise = isSettingsWindow
       ? null
       : listen("tray-toggle-click-through", toggleClickThrough);
+    const unlistenMainWindowVisibilityPromise = listen<boolean>(
+      "main-window-visibility-changed",
+      (event) => setMainWindowVisible(event.payload),
+    );
+    void invoke<boolean>("get_main_window_visibility")
+      .then(setMainWindowVisible)
+      .catch((error) => {
+        recordDiagnosticEvent(
+          "error",
+          "windows",
+          `failed to read main window visibility: ${String(error)}`,
+        );
+      });
 
     return () => {
       releaseTauriListener(unlistenPreferencesPromise);
+      releaseTauriListener(unlistenMainWindowVisibilityPromise);
       if (unlistenTrayTogglePromise) {
         releaseTauriListener(unlistenTrayTogglePromise);
       }
@@ -784,6 +799,39 @@ function App() {
     setSettingsOpen(true);
   }
 
+  async function hideMainWindow() {
+    setContextMenuOpen(false);
+    if (!isTauriRuntime) {
+      setMainWindowVisible(false);
+      return;
+    }
+
+    try {
+      setMainWindowVisible(await invoke<boolean>("hide_main_window"));
+    } catch (error) {
+      pushEvent({ kind: "window.hide.error", message: String(error), state: "error" });
+      recordDiagnosticEvent("error", "windows", `failed to hide main window: ${String(error)}`);
+    }
+  }
+
+  async function toggleMainWindowVisibility() {
+    if (!isTauriRuntime) {
+      setMainWindowVisible((visible) => !visible);
+      return;
+    }
+
+    try {
+      setMainWindowVisible(await invoke<boolean>("toggle_main_window"));
+    } catch (error) {
+      pushEvent({ kind: "window.visibility.error", message: String(error), state: "error" });
+      recordDiagnosticEvent(
+        "error",
+        "windows",
+        `failed to toggle main window visibility: ${String(error)}`,
+      );
+    }
+  }
+
   function closeSettings() {
     if (isTauriRuntime && isSettingsWindow) {
       void invoke("hide_settings_window").catch((error) => {
@@ -989,6 +1037,7 @@ function App() {
           onContextMenu={openContextMenu}
           onCloseBubble={closePetBubble}
           onOpenSettings={openSettingsModal}
+          onHidePet={hideMainWindow}
           onToggleClickThrough={toggleClickThrough}
           onQuit={quitApplication}
         />
@@ -1025,7 +1074,9 @@ function App() {
                 diagnosticsInfo={diagnosticsInfo}
                 reminderHealth={reminderHealth}
                 diagnosticsBusy={diagnosticsBusy}
+                mainWindowVisible={mainWindowVisible}
                 onChange={updatePetPreference}
+                onToggleMainWindowVisibility={toggleMainWindowVisibility}
                 onOpenDiagnostics={openDiagnosticsDirectory}
                 onRepairReminders={repairReminderConfiguration}
               />

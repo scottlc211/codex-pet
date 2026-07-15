@@ -1,6 +1,6 @@
 use crate::{
     diagnostics,
-    windows::{open_settings_window_state, restore_main_window_state},
+    windows::{open_settings_window_state, restore_main_window_state, toggle_main_window_state},
 };
 use tauri::{
     menu::{Menu, MenuItem},
@@ -11,10 +11,20 @@ use tauri::{
 pub(crate) fn setup_tray(app: &mut App) -> tauri::Result<()> {
     diagnostics::info("tray", "setting up system tray");
     let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+    let toggle_pet_item =
+        MenuItem::with_id(app, "toggle-pet", "显示/隐藏桌宠", true, None::<&str>)?;
     let click_through_item =
         MenuItem::with_id(app, "click-through", "鼠标穿透", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let tray_menu = Menu::with_items(app, &[&settings_item, &click_through_item, &quit_item])?;
+    let tray_menu = Menu::with_items(
+        app,
+        &[
+            &settings_item,
+            &toggle_pet_item,
+            &click_through_item,
+            &quit_item,
+        ],
+    )?;
     let mut tray_builder = TrayIconBuilder::with_id("main")
         .tooltip("Codex Pet")
         .menu(&tray_menu)
@@ -25,6 +35,13 @@ pub(crate) fn setup_tray(app: &mut App) -> tauri::Result<()> {
                     diagnostics::error("tray", &format!("failed to open settings: {error}"));
                 } else {
                     diagnostics::info("tray", "settings selected from tray");
+                }
+            }
+            "toggle-pet" => {
+                if let Err(error) = toggle_main_window_state(app) {
+                    diagnostics::error("tray", &format!("failed to toggle main window: {error}"));
+                } else {
+                    diagnostics::info("tray", "main window toggled from tray");
                 }
             }
             "click-through" => {

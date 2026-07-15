@@ -1,4 +1,4 @@
-import { FolderOpen, RefreshCw } from "lucide-react";
+import { Eye, EyeOff, FolderOpen, RefreshCw } from "lucide-react";
 import {
   clampPetContainerDimension,
   clampPetOffset,
@@ -26,7 +26,9 @@ type GeneralSettingsProps = {
   diagnosticsInfo: DiagnosticsInfo | null;
   reminderHealth: ReminderConfigHealth | null;
   diagnosticsBusy: boolean;
+  mainWindowVisible: boolean;
   onChange: UpdatePetPreference;
+  onToggleMainWindowVisibility: () => void;
   onOpenDiagnostics: () => void;
   onRepairReminders: () => void;
 };
@@ -37,7 +39,9 @@ export function GeneralSettings({
   diagnosticsInfo,
   reminderHealth,
   diagnosticsBusy,
+  mainWindowVisible,
   onChange,
+  onToggleMainWindowVisibility,
   onOpenDiagnostics,
   onRepairReminders,
 }: GeneralSettingsProps) {
@@ -45,6 +49,34 @@ export function GeneralSettings({
     <div className="settings-page">
       <div className="section-title">
         <h2>通用</h2>
+      </div>
+      <div className="field pet-visibility-setting">
+        <span>桌宠显示</span>
+        <div className="pet-visibility-row">
+          <div className="pet-visibility-status" role="status">
+            {mainWindowVisible ? (
+              <Eye size={17} aria-hidden="true" />
+            ) : (
+              <EyeOff size={17} aria-hidden="true" />
+            )}
+            <div>
+              <strong>{mainWindowVisible ? "桌宠正在显示" : "桌宠已隐藏"}</strong>
+              <small>任务栏只显示设置窗口；关闭设置不会影响桌宠。</small>
+            </div>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={onToggleMainWindowVisibility}
+          >
+            {mainWindowVisible ? (
+              <EyeOff size={15} aria-hidden="true" />
+            ) : (
+              <Eye size={15} aria-hidden="true" />
+            )}
+            {mainWindowVisible ? "隐藏桌宠" : "显示桌宠"}
+          </button>
+        </div>
       </div>
       <label className="field">
         <span>桌宠大小</span>

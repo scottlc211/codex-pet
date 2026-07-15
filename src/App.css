@@ -846,6 +846,49 @@ h1 {
   border-top: 1px solid rgba(15, 59, 58, 0.12);
 }
 
+.pet-visibility-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pet-visibility-status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #176f68;
+}
+
+.pet-visibility-status > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.pet-visibility-status strong,
+.pet-visibility-status small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pet-visibility-status strong {
+  color: #203432;
+  font-size: 12px;
+}
+
+.pet-visibility-status small {
+  color: #6a7f7b;
+  font-size: 10px;
+}
+
+.pet-visibility-row > .secondary-button {
+  flex: 0 0 auto;
+}
+
 .diagnostics-status-list {
   display: grid;
   gap: 5px;
@@ -1230,6 +1273,64 @@ h1 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.reminder-schedule-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgba(15, 59, 58, 0.14);
+  border-radius: 8px;
+  background: #f3faf8;
+}
+
+.reminder-schedule-options button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #526461;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.reminder-schedule-options button:hover {
+  color: #12645f;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.reminder-schedule-options button.active {
+  border-color: rgba(31, 138, 131, 0.2);
+  color: #0f3b3a;
+  background: #ffffff;
+  box-shadow: 0 2px 7px rgba(16, 32, 31, 0.08);
+}
+
+.reminder-schedule-options button:focus-visible {
+  outline: 3px solid rgba(86, 199, 183, 0.28);
+  outline-offset: 1px;
+}
+
+.field-error {
+  display: block;
+  color: #b42318;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+input[aria-invalid="true"] {
+  border-color: rgba(180, 35, 24, 0.56);
+  background: #fff8f7;
 }
 
 input,
