@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -69,7 +69,9 @@ pub(crate) fn write_json_atomically_with_backup_policy<T: Serialize>(
     if backup_current && path.exists() {
         let backup = backup_path(path);
         fs::copy(path, &backup).map_err(|error| format!("备份现有配置失败：{error}"))?;
-        File::open(&backup)
+        OpenOptions::new()
+            .write(true)
+            .open(&backup)
             .and_then(|file| file.sync_all())
             .map_err(|error| format!("同步配置备份失败：{error}"))?;
     }

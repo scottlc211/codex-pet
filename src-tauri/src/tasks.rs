@@ -64,17 +64,15 @@ fn resolve_configured_codex_executable(value: &str) -> Result<PathBuf, String> {
             .ok_or_else(|| format!("未找到配置的 Codex 命令：{value}"));
     }
 
-    let mut path = clean_user_path(value);
+    let path = clean_user_path(value);
     #[cfg(target_os = "windows")]
-    {
-        if path.extension().is_none() {
-            if let Some(with_cmd) = sibling_with_extension(&path, "cmd") {
-                path = with_cmd;
-            } else if let Some(with_exe) = sibling_with_extension(&path, "exe") {
-                path = with_exe;
-            }
-        }
-    }
+    let path = if path.extension().is_none() {
+        sibling_with_extension(&path, "cmd")
+            .or_else(|| sibling_with_extension(&path, "exe"))
+            .unwrap_or(path)
+    } else {
+        path
+    };
     if !path.exists() {
         return Err(format!("配置的 Codex 路径不存在：{}", path.display()));
     }
