@@ -4,11 +4,13 @@
 
 Codex Pet 是本地桌面应用。WebView 输入、宠物包清单、zip 条目和 Tauri command 参数均按不可信输入处理；应用不会加载远程脚本，也不会把整个 `~/.codex` 暴露给 asset protocol。
 
-本应用会按用户操作启动本机 Codex CLI、打开终端并读取近期 Codex session 状态。这些是产品能力，不应被宠物包或未校验的命令参数间接触发。
+本应用会按用户操作启动本机 Codex CLI、打开终端、读取近期 Codex session 状态，并安装用户明确启用的 Claude Code / Grok Build 生命周期 Hook。这些是产品能力，不应被宠物包或未校验的命令参数间接触发。
 
 ## 主要限制
 
 - Codex 命令名不经过 shell 查找，任务正文只通过 stdin 传递。
+- Agent Hook provider 使用固定白名单；输入限制为 4 MiB，解析后只持久化状态元数据，不保存 prompt、工具参数或模型输出。
+- Claude Code Hook 通过结构化 JSON 合并并保留原配置备份；Grok Build Hook 写入独立的 `codex-pet.json`，卸载不会删除其他 Hook。
 - 终端类型由后端固定白名单校验。
 - 导入资源统一复制到 `~/.codex-pet/pets/`，并限制路径、符号链接、文件数、层级和解压大小。
 - Tauri asset protocol 仅允许 `~/.codex/pets/` 与 `~/.codex-pet/pets/`。

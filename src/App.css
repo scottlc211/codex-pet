@@ -1581,6 +1581,172 @@ textarea:focus {
   gap: 10px;
 }
 
+.agent-monitor {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 9px 0 10px;
+  border-top: 1px solid rgba(15, 59, 58, 0.12);
+  border-bottom: 1px solid rgba(15, 59, 58, 0.12);
+}
+
+.agent-monitor-header,
+.agent-monitor-header > div,
+.agent-hook-row,
+.agent-hook-row > div,
+.agent-session-list li {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.agent-monitor-header,
+.agent-hook-row {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-monitor-header > div,
+.agent-hook-row > div {
+  gap: 7px;
+}
+
+.agent-monitor-header h3 {
+  margin: 0;
+  color: #10201f;
+  font-size: 12px;
+}
+
+.agent-monitor-header svg {
+  color: #176f68;
+}
+
+.agent-monitor-header > span {
+  color: #6a7f7b;
+  font-size: 10px;
+}
+
+.agent-hook-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.agent-hook-row {
+  min-height: 42px;
+  padding: 5px 6px 5px 8px;
+  border: 1px solid rgba(15, 59, 58, 0.11);
+  border-radius: 8px;
+  background: #fbfffe;
+}
+
+.agent-hook-row[data-installed="true"] {
+  border-color: rgba(22, 118, 59, 0.24);
+  background: #f5fcf7;
+}
+
+.agent-hook-row > div {
+  overflow: hidden;
+}
+
+.agent-hook-row > div > svg {
+  flex: 0 0 auto;
+  color: #768884;
+}
+
+.agent-hook-row[data-installed="true"] > div > svg {
+  color: #16763b;
+}
+
+.agent-hook-row span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.agent-hook-row strong,
+.agent-hook-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-hook-row strong {
+  color: #203432;
+  font-size: 11px;
+}
+
+.agent-hook-row small {
+  color: #6a7f7b;
+  font-size: 9px;
+}
+
+.agent-hook-action {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.agent-session-list {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  list-style: none;
+}
+
+.agent-session-list li {
+  gap: 6px;
+  overflow: hidden;
+  color: #526461;
+  font-size: 10px;
+}
+
+.agent-session-list strong,
+.agent-session-list span:not(.agent-session-state) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-session-list strong {
+  flex: 0 0 auto;
+  color: #203432;
+}
+
+.agent-session-list span:not(.agent-session-state) {
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-session-list small {
+  flex: 0 0 auto;
+  color: #176f68;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.agent-session-state {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #1f8a83;
+  box-shadow: 0 0 0 3px rgba(31, 138, 131, 0.1);
+}
+
+.agent-session-list li[data-state="waiting_input"] .agent-session-state {
+  background: #d17b0f;
+  box-shadow: 0 0 0 3px rgba(209, 123, 15, 0.12);
+}
+
+.agent-session-list li[data-state="editing_file"] .agent-session-state {
+  background: #7b61a8;
+  box-shadow: 0 0 0 3px rgba(123, 97, 168, 0.12);
+}
+
 .task-policy-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

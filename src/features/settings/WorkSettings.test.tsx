@@ -44,6 +44,23 @@ describe("WorkSettings", () => {
         taskMaxRetries={1}
         running
         events={[]}
+        agentSessions={[
+          {
+            key: "claude:session-one:root",
+            provider: "claude",
+            sessionId: "session-one",
+            agentId: null,
+            cwd: "C:\\code\\codex-pet",
+            state: "editing_file",
+            message: "Claude Code 正在运行 Edit",
+            updatedAt: 1,
+          },
+        ]}
+        agentHookStatuses={[
+          { provider: "claude", installed: true, configPath: "/home/test/.claude/settings.json", error: null },
+          { provider: "grok", installed: false, configPath: "/home/test/.grok/hooks/codex-pet.json", error: null },
+        ]}
+        agentHookBusyProvider={null}
         taskState={taskState}
         onCodexPathChange={vi.fn()}
         onWorkdirChange={vi.fn()}
@@ -57,6 +74,7 @@ describe("WorkSettings", () => {
         onOpenTaskTerminal={vi.fn()}
         onCancelTask={vi.fn()}
         onClearTaskHistory={vi.fn()}
+        onSetAgentHookInstalled={vi.fn()}
         onSubmit={vi.fn()}
       />,
     );
@@ -66,5 +84,8 @@ describe("WorkSettings", () => {
     expect(markup).toContain("Windows Terminal");
     expect(markup).toContain("编辑");
     expect(markup).toContain('aria-label="打开 codex-pet 的任务终端，当前状态：编辑"');
+    expect(markup).toContain("Claude Code");
+    expect(markup).toContain("已接入");
+    expect(markup).toContain("1 个活跃会话");
   });
 });

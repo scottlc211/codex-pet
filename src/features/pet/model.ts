@@ -32,11 +32,10 @@ export type PetCandidate = {
   states: Partial<Record<PetState | string, PetVisual>>;
 };
 
-export type CodexEvent = {
+export type PetStateEvent = {
   kind: string;
-  message: string;
+  message?: string;
   state?: PetState;
-  sessionId?: string;
 };
 
 export const stateLabels: Record<PetState, string> = {
@@ -60,6 +59,9 @@ export const activeTaskStates = new Set<PetState>([
   "working",
   "running_command",
   "editing_file",
+  "waiting_input",
+  "sweeping",
+  "carrying",
 ]);
 
 export function resolveVisual(pet: PetCandidate, state: PetState): PetVisual | null {
@@ -92,7 +94,7 @@ export function resolveVisual(pet: PetCandidate, state: PetState): PetVisual | n
   return null;
 }
 
-export function normalizeEventState(event: CodexEvent): PetState | null {
+export function normalizeEventState(event: PetStateEvent): PetState | null {
   if (event.state) {
     return event.state;
   }

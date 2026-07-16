@@ -1,3 +1,4 @@
+mod agent_monitor;
 mod codex_monitor;
 mod diagnostics;
 mod pets;
@@ -8,7 +9,6 @@ mod tasks;
 mod tray;
 mod windows;
 
-use codex_monitor::start_codex_session_monitor;
 use pets::{delete_pet_package, find_pet_candidates, import_pet_package};
 use reminders::{start_reminder_scheduler, ReminderManager};
 use serde::Serialize;
@@ -26,11 +26,15 @@ const MAX_EVENT_MESSAGE_CHARS: usize = 4096;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CodexPetEvent {
+struct AgentEvent {
+    provider: String,
     kind: String,
     message: String,
     state: Option<String>,
     session_id: Option<String>,
+    agent_id: Option<String>,
+    cwd: Option<String>,
+    timestamp: u64,
 }
 
 pub(crate) struct ParsedCodexEvent {
@@ -46,15 +50,40 @@ pub(crate) fn emit_codex_event(
     state: Option<&str>,
     session_id: Option<String>,
 ) {
+    emit_agent_event(app, "codex", kind, message, state, session_id, None, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_agent_event(
+    app: &AppHandle,
+    provider: &str,
+    kind: &str,
+    message: &str,
+    state: Option<&str>,
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    cwd: Option<String>,
+) {
     let _ = app.emit(
-        "codex-event",
-        CodexPetEvent {
+        "agent-event",
+        AgentEvent {
+            provider: provider.to_string(),
             kind: kind.to_string(),
             message: normalize_event_message(message),
             state: state.map(str::to_string),
             session_id,
+            agent_id,
+            cwd,
+            timestamp: current_timestamp_ms(),
         },
     );
+}
+
+pub(crate) fn current_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn normalize_event_message(value: &str) -> String {
@@ -199,6 +228,10 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
         .or_else(|| env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
+pub fn run_agent_hook_cli() -> Option<Result<(), String>> {
+    agent_monitor::run_agent_hook_cli()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     diagnostics::init();
@@ -229,7 +262,10 @@ pub fn run() {
             find_pet_candidates,
             import_pet_package,
             delete_pet_package,
-            start_codex_session_monitor,
+            agent_monitor::start_agent_monitor,
+            agent_monitor::get_agent_hook_statuses,
+            agent_monitor::install_agent_hook,
+            agent_monitor::uninstall_agent_hook,
             task_queue::run_codex_task,
             task_queue::get_task_state,
             task_queue::open_task_terminal,

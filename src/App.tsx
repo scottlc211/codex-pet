@@ -24,6 +24,9 @@ import {
   type RenderMode,
 } from "./config/preferences";
 import { useDiagnostics } from "./features/diagnostics/useDiagnostics";
+import { isAgentSessionActive } from "./features/agents/model";
+import { useAgentEvents } from "./features/agents/useAgentEvents";
+import { useAgentHooks } from "./features/agents/useAgentHooks";
 import { defaultReminderConfig, type ReminderConfig } from "./features/reminders/model";
 import { useReminderState } from "./features/reminders/useReminderState";
 import {
@@ -40,7 +43,6 @@ import {
   type PetCandidate,
   type PetState,
 } from "./features/pet/model";
-import { useCodexEvents } from "./features/codex/useCodexEvents";
 import { GeneralSettings } from "./features/settings/GeneralSettings";
 import {
   ReminderDeleteConfirmation,
@@ -151,15 +153,21 @@ function App() {
   const {
     events,
     currentState,
-    running: codexRunning,
+    sessions: agentSessions,
+    running: agentRunning,
     pushEvent,
     setCurrentState,
   } =
-    useCodexEvents({
+    useAgentEvents({
       settingsWindow: isSettingsWindow,
       isDragging,
       onStateMessage: updatePetBubble,
     });
+  const {
+    statuses: agentHookStatuses,
+    busyProvider: agentHookBusyProvider,
+    setHookInstalled: setAgentHookInstalled,
+  } = useAgentHooks({ enabled: isSettingsWindow, pushEvent });
   const {
     taskState,
     hasActiveTasks,
@@ -167,7 +175,11 @@ function App() {
     cancelTask,
     clearTaskHistory,
   } = useTaskQueue({ pushEvent });
-  const running = codexRunning || hasActiveTasks;
+  const running = agentRunning || hasActiveTasks;
+  const activeAgentSessions = useMemo(
+    () => agentSessions.filter(isAgentSessionActive),
+    [agentSessions],
+  );
   const executingTasks = useMemo(
     () =>
       taskState.tasks
@@ -606,7 +618,7 @@ function App() {
       setPetBubble({
         tone: "working",
         label: "进行中",
-        message: normalizeBubbleMessage(message, "Codex 正在处理任务"),
+        message: normalizeBubbleMessage(message, "Agent 正在处理任务"),
         source: "status",
       });
       return;
@@ -1220,6 +1232,9 @@ function App() {
                 taskMaxRetries={taskMaxRetries}
                 running={running}
                 events={events}
+                agentSessions={activeAgentSessions}
+                agentHookStatuses={agentHookStatuses}
+                agentHookBusyProvider={agentHookBusyProvider}
                 taskState={taskState}
                 onCodexPathChange={setCodexPath}
                 onWorkdirChange={setWorkdir}
@@ -1235,6 +1250,7 @@ function App() {
                 onOpenTaskTerminal={openTaskTerminal}
                 onCancelTask={cancelTask}
                 onClearTaskHistory={clearTaskHistory}
+                onSetAgentHookInstalled={setAgentHookInstalled}
                 onSubmit={submitTask}
               />
             )}

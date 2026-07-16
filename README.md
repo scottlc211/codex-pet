@@ -1,6 +1,6 @@
 # Codex Pet
 
-一个轻量 Tauri 桌宠壳，用本地动画包展示宠物，并在需要时调用或监听 Codex CLI。
+一个轻量 Tauri 桌宠壳，用本地动画包展示宠物，并监听 Codex、Claude Code 与 Grok Build 的任务状态。
 
 ## 功能
 
@@ -11,6 +11,8 @@
 - 自动扫描 `~/.codex/pets` 和 `~/.codex-pet/pets`
 - 点击发送任务后，由 Rust 后端受控启动 `codex exec --json`
 - 轮询 `~/.codex/sessions`，把 Codex JSONL session 状态映射成桌宠动画
+- 通过官方生命周期 Hooks 监听外部 Claude Code 与 Grok Build 会话
+- 按 Provider、会话与子 Agent 独立聚合状态，避免并行任务相互覆盖
 - 桌宠与设置窗口独立拖动，支持多显示器位置和设置窗口尺寸恢复
 - 右键桌宠或系统托盘可打开设置、显示/隐藏桌宠、切换鼠标穿透或退出应用
 - 设置支持容器尺寸、显示偏移、主题、每周或指定日期提醒、诊断恢复和工作任务
@@ -278,6 +280,21 @@ printf '%s' "你的任务" | codex exec --json -
 ```
 
 因此你在外部终端运行 Codex CLI 时，近期活动也会驱动桌宠状态。这个监听是 JSONL fallback，不会接管 Codex 的审批或终端输入。
+
+## 多 Agent 监听
+
+在“设置 > 工作任务 > Agent 监听”中可以分别启用 Claude Code 和 Grok Build。启用后，应用会安装由 Codex Pet 管理的个人 Hook 配置：
+
+```text
+Claude Code  ~/.claude/settings.json
+Grok Build   ~/.grok/hooks/codex-pet.json
+```
+
+Hook 调用当前 Codex Pet 可执行文件的 `--agent-hook` 模式，将标准生命周期事件写入 `~/.codex-pet/agent-events/`。收件箱只保存 Provider、session id、事件名、工具名、工作目录和子 Agent 标识等状态元数据，不保存 prompt、工具参数或模型输出。主程序按捕获顺序消费事件，并映射为思考、命令、编辑、等待、成功或失败等桌宠状态。
+
+Claude Code 当前支持主会话与 `SubagentStart` / `SubagentStop` 子 Agent 状态。Grok Build 第一版按 session 聚合；其公开 Hook 契约未明确子 Agent id 字段，因此暂不推测字段名。Grok 默认兼容 Claude Hook 配置，监听器会根据官方字段命名识别真实 Provider，并折叠同一生命周期事件的重复回调。
+
+停用监听只移除 Codex Pet 管理的 Hook 项，不会改动 Claude Code 的其他设置或第三方 Hook。Grok 的配置使用独立文件，停用时只删除该文件。
 
 ## 安全
 

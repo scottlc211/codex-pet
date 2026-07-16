@@ -1,19 +1,32 @@
 import type { FormEventHandler } from "react";
 import {
+  Activity,
+  CheckCircle2,
   Clock3,
   FileSearch,
   FolderKanban,
   FolderOpen,
   FolderSearch,
+  Link2,
   ListTodo,
+  LoaderCircle,
   Play,
+  RadioTower,
   Sparkles,
   Square,
   SquareTerminal,
   Trash2,
+  Unplug,
   X,
 } from "lucide-react";
-import type { CodexEvent } from "../pet/model";
+import {
+  agentProviderLabels,
+  agentSessionProject,
+  type AgentEvent,
+  type AgentHookStatus,
+  type AgentSession,
+} from "../agents/model";
+import { stateLabels } from "../pet/model";
 import {
   isTaskActive,
   shortTaskId,
@@ -37,7 +50,10 @@ type WorkSettingsProps = {
   taskTimeoutMinutes: number;
   taskMaxRetries: number;
   running: boolean;
-  events: CodexEvent[];
+  events: AgentEvent[];
+  agentSessions: AgentSession[];
+  agentHookStatuses: AgentHookStatus[];
+  agentHookBusyProvider: string | null;
   taskState: TaskStateSnapshot;
   onCodexPathChange: (value: string) => void;
   onWorkdirChange: (value: string) => void;
@@ -51,6 +67,7 @@ type WorkSettingsProps = {
   onOpenTaskTerminal: (taskId: string) => void;
   onCancelTask: (taskId: string) => void;
   onClearTaskHistory: () => void;
+  onSetAgentHookInstalled: (provider: "claude" | "grok", installed: boolean) => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
 };
 
@@ -66,6 +83,9 @@ export function WorkSettings({
   taskMaxRetries,
   running,
   events,
+  agentSessions,
+  agentHookStatuses,
+  agentHookBusyProvider,
   taskState,
   onCodexPathChange,
   onWorkdirChange,
@@ -79,6 +99,7 @@ export function WorkSettings({
   onOpenTaskTerminal,
   onCancelTask,
   onClearTaskHistory,
+  onSetAgentHookInstalled,
   onSubmit,
 }: WorkSettingsProps) {
   return (
@@ -86,6 +107,70 @@ export function WorkSettings({
       <div className="section-title">
         <h2>工作任务</h2>
       </div>
+      <section className="agent-monitor" aria-label="Agent 监听">
+        <div className="agent-monitor-header">
+          <div>
+            <RadioTower size={15} aria-hidden="true" />
+            <h3>Agent 监听</h3>
+          </div>
+          <span aria-live="polite">{agentSessions.length} 个活跃会话</span>
+        </div>
+        <div className="agent-hook-list">
+          {(["claude", "grok"] as const).map((provider) => {
+            const status = agentHookStatuses.find((item) => item.provider === provider);
+            const busy = agentHookBusyProvider === provider;
+            const pending = !status;
+            const label = agentProviderLabels[provider];
+            return (
+              <div className="agent-hook-row" key={provider} data-installed={status?.installed ?? false}>
+                <div>
+                  {status?.installed ? (
+                    <CheckCircle2 size={15} aria-hidden="true" />
+                  ) : (
+                    <Activity size={15} aria-hidden="true" />
+                  )}
+                  <span>
+                    <strong>{label}</strong>
+                    <small title={status?.error ?? status?.configPath}>
+                      {pending
+                        ? "检查中"
+                        : (status.error ?? (status.installed ? "已接入" : "未接入"))}
+                    </small>
+                  </span>
+                </div>
+                <button
+                  className="secondary-button agent-hook-action"
+                  type="button"
+                  title={`${status?.installed ? "停用" : "启用"}${label} 状态监听`}
+                  disabled={pending || busy || Boolean(status.error)}
+                  onClick={() => onSetAgentHookInstalled(provider, !status?.installed)}
+                >
+                  {pending || busy ? (
+                    <LoaderCircle className="spin-icon" size={14} aria-hidden="true" />
+                  ) : status?.installed ? (
+                    <Unplug size={14} aria-hidden="true" />
+                  ) : (
+                    <Link2 size={14} aria-hidden="true" />
+                  )}
+                  {pending ? "检查" : status.installed ? "停用" : "启用"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {agentSessions.length > 0 && (
+          <ul className="agent-session-list" aria-label="活跃 Agent 会话">
+            {agentSessions.slice(0, 6).map((session) => (
+              <li key={session.key} data-state={session.state}>
+                <span className="agent-session-state" aria-hidden="true" />
+                <strong>{agentProviderLabels[session.provider]}</strong>
+                <span title={session.cwd ?? session.sessionId}>{agentSessionProject(session)}</span>
+                <small>{stateLabels[session.state]}</small>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <label className="field">
         <span>Codex CLI 路径</span>
         <div className="work-path-row">
@@ -295,11 +380,14 @@ export function WorkSettings({
         )}
       </section>
 
-      <div className="event-log" aria-label="Codex 状态日志" aria-live="polite">
+      <div className="event-log" aria-label="Agent 状态日志" aria-live="polite">
         <Sparkles size={15} />
         <ul>
           {events.slice(-3).map((event, index) => (
             <li key={`${event.kind}-${index}`}>
+              {event.provider && event.provider !== "system"
+                ? `${agentProviderLabels[event.provider]} · `
+                : ""}
               {event.sessionId ? `${shortSession(event.sessionId)} · ` : ""}
               {event.message}
             </li>

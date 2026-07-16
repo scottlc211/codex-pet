@@ -74,13 +74,13 @@ pub(crate) fn resolve_task_terminal_id(terminal: Option<&str>) -> String {
 pub(crate) fn open_task_terminal_at(
     cwd: &Path,
     terminal: &str,
-    task_id: &str,
+    _task_id: &str,
 ) -> Result<TaskTerminalLaunch, String> {
     let terminal_id = resolve_task_terminal_id(Some(terminal));
 
     #[cfg(target_os = "windows")]
     if terminal_id == "windows-terminal" {
-        let focused_existing = open_or_focus_windows_task_terminal(cwd, task_id)?;
+        let focused_existing = open_or_focus_windows_task_terminal(cwd, _task_id)?;
         return Ok(TaskTerminalLaunch {
             terminal_id,
             focused_existing,

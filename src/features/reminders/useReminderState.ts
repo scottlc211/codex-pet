@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CodexEvent } from "../pet/model";
+import type { AgentEvent } from "../agents/model";
 import { isTauriRuntime, releaseTauriListener } from "../../runtime/tauri";
 import {
   classifyReminderLateness,
@@ -24,7 +24,7 @@ import {
 type UseReminderStateOptions = {
   settingsWindow: boolean;
   onTriggered: (config: ReminderConfig) => void;
-  pushEvent: (event: CodexEvent) => void;
+  pushEvent: (event: AgentEvent) => void;
 };
 
 export function useReminderState({

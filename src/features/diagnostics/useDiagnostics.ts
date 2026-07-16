@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import type { PreferencesLoadStatus } from "../../config/preferences";
-import type { CodexEvent } from "../pet/model";
+import type { AgentEvent } from "../agents/model";
 import { recordDiagnosticEvent } from "../../runtime/diagnostics";
 import { isTauriRuntime } from "../../runtime/tauri";
 
@@ -27,7 +27,7 @@ export type ReminderConfigHealth = {
 type UseDiagnosticsOptions = {
   settingsWindow: boolean;
   preferencesStatus: PreferencesLoadStatus;
-  pushEvent: (event: CodexEvent) => void;
+  pushEvent: (event: AgentEvent) => void;
 };
 
 export function useDiagnostics({

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
-import type { CodexEvent } from "../pet/model";
+import type { AgentEvent } from "../agents/model";
 import { isTauriRuntime, releaseTauriListener } from "../../runtime/tauri";
 import {
   emptyTaskState,
@@ -11,7 +11,7 @@ import {
 } from "./model";
 
 type UseTaskQueueOptions = {
-  pushEvent: (event: CodexEvent) => void;
+  pushEvent: (event: AgentEvent) => void;
 };
 
 export function useTaskQueue({ pushEvent }: UseTaskQueueOptions) {
