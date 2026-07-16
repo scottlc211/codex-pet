@@ -1,7 +1,10 @@
 use crate::{
     diagnostics, emit_codex_event, handle_codex_json_line, home_dir, read_bounded_line,
     storage::{read_with_backup_status, write_json_atomically_with_backup_policy, RecoverySource},
-    tasks::{command_for_executable, has_git_root, resolve_codex_executable, resolve_work_path},
+    tasks::{
+        command_for_executable, has_git_root, open_task_terminal_at, resolve_codex_executable,
+        resolve_task_terminal_id, resolve_work_path,
+    },
 };
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
@@ -28,6 +31,7 @@ const MAX_PROMPT_PREVIEW_CHARS: usize = 160;
 const MAX_TASK_ERROR_CHARS: usize = 1000;
 const MAX_QUEUED_TASKS: usize = 20;
 const MAX_TASK_HISTORY: usize = 100;
+const MAX_CONCURRENT_TASKS: usize = 3;
 const DEFAULT_TIMEOUT_MINUTES: u32 = 30;
 const MAX_TIMEOUT_MINUTES: u32 = 240;
 const MAX_RETRIES: u32 = 3;
@@ -65,7 +69,16 @@ pub(crate) struct TaskRecord {
     id: String,
     prompt_preview: String,
     cwd: String,
+    // 记录任务关联的具体终端程序，不把终端窗口句柄写入持久化历史。
+    #[serde(default = "default_terminal_id")]
+    terminal_id: String,
     status: TaskStatus,
+    #[serde(default)]
+    activity: Option<String>,
+    #[serde(default)]
+    status_message: String,
+    #[serde(default)]
+    session_id: Option<String>,
     attempts: u32,
     max_attempts: u32,
     timeout_minutes: u32,
@@ -79,14 +92,34 @@ pub(crate) struct TaskRecord {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskStateSnapshot {
     tasks: Vec<TaskRecord>,
-    running_task_id: Option<String>,
+    running_task_ids: Vec<String>,
     queued_count: usize,
+    max_concurrent_tasks: usize,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskSubmission {
     task_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunCodexTaskRequest {
+    prompt: String,
+    cwd: Option<String>,
+    codex_path: Option<String>,
+    terminal_id: Option<String>,
+    timeout_minutes: Option<u32>,
+    max_retries: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskTerminalOpenResult {
+    task_id: String,
+    terminal_id: String,
+    focused_existing: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -113,7 +146,7 @@ struct RunningTask {
 struct TaskState {
     queue: VecDeque<TaskRequest>,
     records: VecDeque<TaskRecord>,
-    running: Option<RunningTask>,
+    running: Vec<RunningTask>,
     history_source: RecoverySource,
 }
 
@@ -148,7 +181,7 @@ impl TaskManager {
                 state: Mutex::new(TaskState {
                     queue: VecDeque::new(),
                     records,
-                    running: None,
+                    running: Vec::new(),
                     history_source,
                 }),
                 wake_worker: Condvar::new(),
@@ -170,15 +203,25 @@ impl TaskManager {
         if self.shared.worker_started.swap(true, Ordering::SeqCst) {
             return;
         }
-        let shared = Arc::clone(&self.shared);
-        if let Err(error) = thread::Builder::new()
-            .name("codex-task-worker".to_string())
-            .spawn(move || task_worker_loop(app, shared))
-        {
+        let mut started_workers = 0;
+        for worker_index in 0..MAX_CONCURRENT_TASKS {
+            let app = app.clone();
+            let shared = Arc::clone(&self.shared);
+            match thread::Builder::new()
+                .name(format!("codex-task-worker-{}", worker_index + 1))
+                .spawn(move || task_worker_loop(app, shared))
+            {
+                Ok(_) => started_workers += 1,
+                Err(error) => diagnostics::error(
+                    "tasks",
+                    &format!("failed to start task worker {}: {error}", worker_index + 1),
+                ),
+            }
+        }
+        if started_workers == 0 {
             self.shared.worker_started.store(false, Ordering::SeqCst);
-            diagnostics::error("tasks", &format!("failed to start task worker: {error}"));
         } else {
-            diagnostics::info("tasks", "task worker started");
+            diagnostics::info("tasks", &format!("started {started_workers} task workers"));
         }
     }
 
@@ -197,13 +240,9 @@ impl TaskManager {
 pub(crate) fn run_codex_task(
     app: AppHandle,
     manager: State<TaskManager>,
-    prompt: String,
-    cwd: Option<String>,
-    codex_path: Option<String>,
-    timeout_minutes: Option<u32>,
-    max_retries: Option<u32>,
+    request: RunCodexTaskRequest,
 ) -> Result<TaskSubmission, String> {
-    let prompt = prompt.trim().to_string();
+    let prompt = request.prompt.trim().to_string();
     if prompt.is_empty() {
         diagnostics::warn("tasks", "rejected empty task");
         return Err("任务内容不能为空".to_string());
@@ -213,10 +252,11 @@ pub(crate) fn run_codex_task(
         return Err(format!("任务内容不能超过 {} KiB", MAX_PROMPT_BYTES / 1024));
     }
 
-    let cwd = resolve_work_path(cwd)?;
-    let executable = resolve_codex_executable(codex_path)?;
-    let timeout_minutes = normalize_timeout_minutes(timeout_minutes);
-    let max_attempts = normalize_max_retries(max_retries) + 1;
+    let cwd = resolve_work_path(request.cwd)?;
+    let executable = resolve_codex_executable(request.codex_path)?;
+    let terminal_id = resolve_task_terminal_id(request.terminal_id.as_deref());
+    let timeout_minutes = normalize_timeout_minutes(request.timeout_minutes);
+    let max_attempts = normalize_max_retries(request.max_retries) + 1;
     let task_id = new_task_id();
     let request = TaskRequest {
         id: task_id.clone(),
@@ -230,7 +270,11 @@ pub(crate) fn run_codex_task(
         id: task_id.clone(),
         prompt_preview: prompt_preview(&prompt),
         cwd: cwd.to_string_lossy().to_string(),
+        terminal_id,
         status: TaskStatus::Queued,
+        activity: Some("queued".to_string()),
+        status_message: "等待可用执行槽".to_string(),
+        session_id: None,
         attempts: 0,
         max_attempts,
         timeout_minutes,
@@ -271,6 +315,42 @@ pub(crate) fn run_codex_task(
 #[tauri::command]
 pub(crate) fn get_task_state(manager: State<TaskManager>) -> TaskStateSnapshot {
     manager.snapshot()
+}
+
+#[tauri::command]
+pub(crate) fn open_task_terminal(
+    manager: State<TaskManager>,
+    task_id: String,
+) -> Result<TaskTerminalOpenResult, String> {
+    let (cwd, terminal_id) = {
+        let state = manager
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let record = state
+            .records
+            .iter()
+            .find(|record| record.id == task_id)
+            .ok_or_else(|| "未找到任务".to_string())?;
+        (PathBuf::from(&record.cwd), record.terminal_id.clone())
+    };
+    if !cwd.is_dir() {
+        return Err("任务项目目录已不存在".to_string());
+    }
+
+    let launch = open_task_terminal_at(&cwd, &terminal_id, &task_id).inspect_err(|error| {
+        diagnostics::error(
+            "terminal",
+            &format!("failed to open terminal for task {task_id}: {error}"),
+        );
+    })?;
+    diagnostics::info("terminal", &format!("opened terminal for task {task_id}"));
+    Ok(TaskTerminalOpenResult {
+        task_id,
+        terminal_id: launch.terminal_id,
+        focused_existing: launch.focused_existing,
+    })
 }
 
 #[tauri::command]
@@ -338,23 +418,23 @@ fn cancel_task_in_state(state: &mut TaskState, task_id: &str) -> Result<CancelAc
         state.queue.remove(index);
         if let Some(record) = find_record_mut(&mut state.records, task_id) {
             record.status = TaskStatus::Cancelled;
+            record.activity = Some("idle".to_string());
+            record.status_message = "排队任务已取消".to_string();
             record.finished_at = Some(now_ms());
             record.error = None;
         }
         return Ok(CancelAction::Queued);
     }
 
-    if let Some(running) = state
-        .running
-        .as_ref()
-        .filter(|running| running.id == task_id)
-    {
+    if let Some(running) = state.running.iter().find(|running| running.id == task_id) {
         let cancel_requested = Arc::clone(&running.cancel_requested);
         if let Some(record) = find_record_mut(&mut state.records, task_id) {
             if record.status == TaskStatus::Cancelling {
                 return Err("任务正在取消".to_string());
             }
             record.status = TaskStatus::Cancelling;
+            record.activity = Some("waiting_input".to_string());
+            record.status_message = "正在取消任务".to_string();
         }
         return Ok(CancelAction::Running(cancel_requested));
     }
@@ -380,7 +460,7 @@ fn task_worker_loop(app: AppHandle, shared: Arc<TaskShared>) {
             }
             let request = state.queue.pop_front().expect("task queue is not empty");
             let cancel_requested = Arc::new(AtomicBool::new(false));
-            state.running = Some(RunningTask {
+            state.running.push(RunningTask {
                 id: request.id.clone(),
                 cancel_requested: Arc::clone(&cancel_requested),
             });
@@ -425,7 +505,7 @@ fn execute_request(
             &format!("started task {} attempt {attempt}", request.id),
         );
 
-        let outcome = run_task_attempt(app, &request, &cancel_requested);
+        let outcome = run_task_attempt(app, shared, &request, &cancel_requested);
         if matches!(outcome, TaskOutcome::Failed(_)) && attempt < request.max_attempts {
             let message = match &outcome {
                 TaskOutcome::Failed(message) => message.clone(),
@@ -465,6 +545,12 @@ fn update_attempt_state(shared: &TaskShared, task_id: &str, attempt: u32) -> Tas
         .unwrap_or_else(|error| error.into_inner());
     if let Some(record) = find_record_mut(&mut state.records, task_id) {
         record.status = TaskStatus::Running;
+        record.activity = Some("thinking".to_string());
+        record.status_message = if attempt == 1 {
+            "Codex CLI 已启动".to_string()
+        } else {
+            "Codex CLI 正在重试".to_string()
+        };
         record.attempts = attempt;
         record.started_at.get_or_insert_with(now_ms);
         record.error = None;
@@ -480,6 +566,8 @@ fn update_retry_state(shared: &TaskShared, task_id: &str, message: &str) -> Task
         .unwrap_or_else(|error| error.into_inner());
     if let Some(record) = find_record_mut(&mut state.records, task_id) {
         record.status = TaskStatus::Retrying;
+        record.activity = Some("thinking".to_string());
+        record.status_message = "等待下一次尝试".to_string();
         record.error = Some(normalize_task_error(message));
     }
     persist_history(&mut state);
@@ -488,6 +576,7 @@ fn update_retry_state(shared: &TaskShared, task_id: &str, message: &str) -> Task
 
 fn run_task_attempt(
     app: &AppHandle,
+    shared: &Arc<TaskShared>,
     request: &TaskRequest,
     cancel_requested: &AtomicBool,
 ) -> TaskOutcome {
@@ -513,24 +602,27 @@ fn run_task_attempt(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdout_app = app.clone();
+    let stdout_shared = Arc::clone(shared);
     let stderr_app = app.clone();
     let stdout_task_id = request.id.clone();
     let stderr_task_id = request.id.clone();
-    let _stdout_thread = thread::spawn(move || {
+    let stdout_thread = thread::spawn(move || {
         if let Some(stdout) = stdout {
             let mut reader = BufReader::new(stdout);
             while let Ok(Some(line)) = read_bounded_line(&mut reader, MAX_OUTPUT_LINE_BYTES) {
                 if !line.is_empty() {
-                    handle_codex_json_line(
+                    if let Some(event) = handle_codex_json_line(
                         &stdout_app,
                         &String::from_utf8_lossy(&line),
                         Some(&stdout_task_id),
-                    );
+                    ) {
+                        update_task_activity(&stdout_app, &stdout_shared, &stdout_task_id, event);
+                    }
                 }
             }
         }
     });
-    let _stderr_thread = thread::spawn(move || {
+    let stderr_thread = thread::spawn(move || {
         if let Some(stderr) = stderr {
             let mut reader = BufReader::new(stderr);
             while let Ok(Some(line)) = read_bounded_line(&mut reader, MAX_OUTPUT_LINE_BYTES) {
@@ -561,6 +653,8 @@ fn run_task_attempt(
         .err();
     if let Some(error) = prompt_write_error {
         terminate_child(&mut child);
+        let _ = stdout_thread.join();
+        let _ = stderr_thread.join();
         return TaskOutcome::Failed(error);
     }
 
@@ -587,7 +681,50 @@ fn run_task_attempt(
             }
         }
     };
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
     outcome
+}
+
+fn update_task_activity(
+    app: &AppHandle,
+    shared: &TaskShared,
+    task_id: &str,
+    event: crate::ParsedCodexEvent,
+) {
+    let snapshot = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(record) = find_record_mut(&mut state.records, task_id) else {
+            return;
+        };
+        let mut changed = false;
+        if let Some(session_id) = event.codex_session_id {
+            if record.session_id.as_deref() != Some(session_id.as_str()) {
+                record.session_id = Some(session_id);
+                changed = true;
+            }
+        }
+        if matches!(record.status, TaskStatus::Running | TaskStatus::Retrying) {
+            if let Some(activity) = event.state {
+                if record.activity.as_deref() != Some(activity.as_str()) {
+                    record.activity = Some(activity);
+                    changed = true;
+                }
+            }
+            let message = normalize_task_status_message(&event.message);
+            if !message.is_empty() && record.status_message != message {
+                record.status_message = message;
+                changed = true;
+            }
+        }
+        changed.then(|| snapshot_from_state(&state))
+    };
+    if let Some(snapshot) = snapshot {
+        emit_task_snapshot(app, &snapshot);
+    }
 }
 
 fn terminate_child(child: &mut Child) {
@@ -670,10 +807,12 @@ fn finish_task(app: &AppHandle, shared: &TaskShared, task_id: &str, outcome: Tas
             .unwrap_or_else(|lock_error| lock_error.into_inner());
         if let Some(record) = find_record_mut(&mut state.records, task_id) {
             record.status = status;
+            record.activity = Some(pet_state.to_string());
+            record.status_message = event_message.clone();
             record.finished_at = Some(now_ms());
             record.error = error;
         }
-        state.running = None;
+        state.running.retain(|running| running.id != task_id);
         persist_history(&mut state);
         snapshot_from_state(&state)
     };
@@ -696,8 +835,13 @@ fn finish_task(app: &AppHandle, shared: &TaskShared, task_id: &str, outcome: Tas
 fn snapshot_from_state(state: &TaskState) -> TaskStateSnapshot {
     TaskStateSnapshot {
         tasks: state.records.iter().cloned().collect(),
-        running_task_id: state.running.as_ref().map(|running| running.id.clone()),
+        running_task_ids: state
+            .running
+            .iter()
+            .map(|running| running.id.clone())
+            .collect(),
         queued_count: state.queue.len(),
+        max_concurrent_tasks: MAX_CONCURRENT_TASKS,
     }
 }
 
@@ -727,6 +871,10 @@ fn normalize_max_retries(value: Option<u32>) -> u32 {
     value.unwrap_or(0).min(MAX_RETRIES)
 }
 
+fn default_terminal_id() -> String {
+    "auto".to_string()
+}
+
 fn prompt_preview(prompt: &str) -> String {
     let preview = prompt
         .split_whitespace()
@@ -747,6 +895,14 @@ fn normalize_task_error(value: &str) -> String {
         .chars()
         .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
         .take(MAX_TASK_ERROR_CHARS)
+        .collect()
+}
+
+fn normalize_task_status_message(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .take(MAX_PROMPT_PREVIEW_CHARS)
         .collect()
 }
 
@@ -797,6 +953,8 @@ fn mark_interrupted_tasks(records: &mut VecDeque<TaskRecord>) -> bool {
     for record in records {
         if !record.status.is_terminal() {
             record.status = TaskStatus::Failed;
+            record.activity = Some("error".to_string());
+            record.status_message = "应用上次退出时任务未完成".to_string();
             record.finished_at = Some(now_ms());
             record.error = Some("应用上次退出时任务未完成".to_string());
             changed = true;
@@ -832,7 +990,11 @@ mod tests {
             id: id.to_string(),
             prompt_preview: "test".to_string(),
             cwd: ".".to_string(),
+            terminal_id: default_terminal_id(),
             status,
+            activity: None,
+            status_message: String::new(),
+            session_id: None,
             attempts: 0,
             max_attempts: 1,
             timeout_minutes: 30,
@@ -887,7 +1049,7 @@ mod tests {
                 test_record("two", TaskStatus::Queued),
                 test_record("one", TaskStatus::Queued),
             ]),
-            running: None,
+            running: Vec::new(),
             history_source: RecoverySource::Missing,
         };
 
@@ -906,6 +1068,76 @@ mod tests {
                 .status,
             TaskStatus::Cancelled
         );
+    }
+
+    #[test]
+    fn running_tasks_are_tracked_and_cancelled_independently() {
+        let first_cancel = Arc::new(AtomicBool::new(false));
+        let second_cancel = Arc::new(AtomicBool::new(false));
+        let mut state = TaskState {
+            queue: VecDeque::new(),
+            records: VecDeque::from([
+                test_record("two", TaskStatus::Running),
+                test_record("one", TaskStatus::Running),
+            ]),
+            running: vec![
+                RunningTask {
+                    id: "one".to_string(),
+                    cancel_requested: Arc::clone(&first_cancel),
+                },
+                RunningTask {
+                    id: "two".to_string(),
+                    cancel_requested: Arc::clone(&second_cancel),
+                },
+            ],
+            history_source: RecoverySource::Missing,
+        };
+
+        let action = cancel_task_in_state(&mut state, "one").expect("cancel first task");
+        let CancelAction::Running(cancel_requested) = action else {
+            panic!("running task should return its cancellation token");
+        };
+        cancel_requested.store(true, Ordering::SeqCst);
+
+        assert!(first_cancel.load(Ordering::SeqCst));
+        assert!(!second_cancel.load(Ordering::SeqCst));
+        assert_eq!(state.running.len(), 2);
+        assert_eq!(
+            state
+                .records
+                .iter()
+                .find(|record| record.id == "one")
+                .expect("first record")
+                .status,
+            TaskStatus::Cancelling
+        );
+        assert_eq!(
+            snapshot_from_state(&state).running_task_ids,
+            vec!["one".to_string(), "two".to_string()]
+        );
+    }
+
+    #[test]
+    fn legacy_task_history_receives_terminal_and_activity_defaults() {
+        let record: TaskRecord = serde_json::from_value(serde_json::json!({
+            "id": "legacy",
+            "promptPreview": "test",
+            "cwd": ".",
+            "status": "completed",
+            "attempts": 1,
+            "maxAttempts": 1,
+            "timeoutMinutes": 30,
+            "createdAt": 1,
+            "startedAt": 1,
+            "finishedAt": 2,
+            "error": null
+        }))
+        .expect("deserialize legacy record");
+
+        assert_eq!(record.terminal_id, "auto");
+        assert_eq!(record.activity, None);
+        assert!(record.status_message.is_empty());
+        assert_eq!(record.session_id, None);
     }
 
     #[test]

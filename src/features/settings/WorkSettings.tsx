@@ -2,12 +2,14 @@ import type { FormEventHandler } from "react";
 import {
   Clock3,
   FileSearch,
+  FolderKanban,
   FolderOpen,
   FolderSearch,
   ListTodo,
   Play,
   Sparkles,
   Square,
+  SquareTerminal,
   Trash2,
   X,
 } from "lucide-react";
@@ -15,7 +17,9 @@ import type { CodexEvent } from "../pet/model";
 import {
   isTaskActive,
   shortTaskId,
-  taskStatusLabel,
+  taskDisplayStatusLabel,
+  taskProjectName,
+  taskQueueSummary,
   type TaskStateSnapshot,
 } from "../tasks/model";
 
@@ -44,6 +48,7 @@ type WorkSettingsProps = {
   onPickCodexExecutable: () => void;
   onPickWorkPath: (kind: "file" | "directory") => void;
   onOpenTerminal: () => void;
+  onOpenTaskTerminal: (taskId: string) => void;
   onCancelTask: (taskId: string) => void;
   onClearTaskHistory: () => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
@@ -71,6 +76,7 @@ export function WorkSettings({
   onPickCodexExecutable,
   onPickWorkPath,
   onOpenTerminal,
+  onOpenTaskTerminal,
   onCancelTask,
   onClearTaskHistory,
   onSubmit,
@@ -199,7 +205,13 @@ export function WorkSettings({
 
         <button className="run-button" type="submit" disabled={!task.trim()}>
           <Play size={18} />
-          <span>{running ? "加入队列" : "发送给 Codex"}</span>
+          <span>
+            {!running
+              ? "发送给 Codex"
+              : taskState.runningTaskIds.length < taskState.maxConcurrentTasks
+                ? "并行执行"
+                : "加入队列"}
+          </span>
         </button>
       </form>
 
@@ -207,7 +219,7 @@ export function WorkSettings({
         <div className="task-history-header">
           <div>
             <h3>任务记录</h3>
-            <span>{taskState.queuedCount > 0 ? `${taskState.queuedCount} 个等待` : "队列空闲"}</span>
+            <span aria-live="polite">{taskQueueSummary(taskState)}</span>
           </div>
           <button
             className="icon-button"
@@ -223,37 +235,67 @@ export function WorkSettings({
           <div className="task-history-empty">暂无任务记录</div>
         ) : (
           <ul className="task-history-list">
-            {taskState.tasks.slice(0, 8).map((item) => (
-              <li key={item.id} data-status={item.status}>
-                <div className="task-history-main">
-                  <strong title={item.promptPreview}>{item.promptPreview}</strong>
-                  <span>{taskStatusLabel(item.status)}</span>
-                </div>
-                <div className="task-history-meta">
-                  <code title={item.id}>{shortTaskId(item.id)}</code>
-                  <span>
-                    {item.attempts}/{item.maxAttempts} 次
-                  </span>
-                  <span>{formatTaskTime(item.createdAt)}</span>
+            {taskState.tasks.slice(0, 8).map((item) => {
+              const projectName = taskProjectName(item.cwd);
+              const terminalLabel =
+                terminals.find((terminal) => terminal.id === item.terminalId)?.label ??
+                item.terminalId;
+              return (
+                <li key={item.id} data-status={item.status} data-activity={item.activity ?? "idle"}>
+                  <button
+                    className="task-history-open"
+                    type="button"
+                    title={`打开 ${projectName} 的任务终端`}
+                    aria-label={`打开 ${projectName} 的任务终端，当前状态：${taskDisplayStatusLabel(item)}`}
+                    onClick={() => onOpenTaskTerminal(item.id)}
+                  >
+                    <div className="task-history-main">
+                      <strong title={item.promptPreview}>{item.promptPreview}</strong>
+                      <span aria-live="polite">{taskDisplayStatusLabel(item)}</span>
+                    </div>
+                    <div className="task-history-context">
+                      <span title={item.cwd}>
+                        <FolderKanban size={12} aria-hidden="true" />
+                        {projectName}
+                      </span>
+                      <span title={terminalLabel}>
+                        <SquareTerminal size={12} aria-hidden="true" />
+                        {terminalLabel}
+                      </span>
+                    </div>
+                    <div className="task-history-meta">
+                      <code title={item.id}>{shortTaskId(item.id)}</code>
+                      <span>
+                        {item.attempts}/{item.maxAttempts} 次
+                      </span>
+                      <span>{formatTaskTime(item.createdAt)}</span>
+                    </div>
+                    {isTaskActive(item.status) && item.statusMessage && (
+                      <p className="task-status-message" title={item.statusMessage}>
+                        {item.statusMessage}
+                      </p>
+                    )}
+                    {item.error && <p title={item.error}>{item.error}</p>}
+                  </button>
                   {isTaskActive(item.status) && item.status !== "cancelling" && (
                     <button
-                      className="icon-button"
+                      className="task-cancel-button"
                       type="button"
-                      title="取消任务"
+                      title={`取消任务：${projectName}`}
+                      aria-label={`取消任务：${projectName}`}
                       onClick={() => onCancelTask(item.id)}
                     >
                       <Square size={13} aria-hidden="true" />
                     </button>
                   )}
-                </div>
-                {item.error && <p title={item.error}>{item.error}</p>}
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
 
-      <div className="event-log" aria-label="Codex 状态日志">
+      <div className="event-log" aria-label="Codex 状态日志" aria-live="polite">
         <Sparkles size={15} />
         <ul>
           {events.slice(-3).map((event, index) => (

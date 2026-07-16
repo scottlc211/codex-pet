@@ -7,6 +7,14 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{BOOL, HWND, LPARAM},
+    UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible, SetForegroundWindow,
+        ShowWindow, SW_RESTORE,
+    },
+};
 
 #[cfg(unix)]
 use std::fs;
@@ -26,6 +34,11 @@ pub(crate) struct TerminalOption {
     label: String,
 }
 
+pub(crate) struct TaskTerminalLaunch {
+    pub(crate) terminal_id: String,
+    pub(crate) focused_existing: bool,
+}
+
 #[tauri::command]
 pub(crate) fn open_terminal(cwd: Option<String>, terminal: Option<String>) -> Result<(), String> {
     let cwd = resolve_work_path(cwd)?;
@@ -39,6 +52,46 @@ pub(crate) fn open_terminal(cwd: Option<String>, terminal: Option<String>) -> Re
 #[tauri::command]
 pub(crate) fn list_terminals() -> Vec<TerminalOption> {
     available_terminal_options()
+}
+
+pub(crate) fn resolve_task_terminal_id(terminal: Option<&str>) -> String {
+    let selected = terminal
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("auto");
+    let options = available_terminal_options();
+    if selected != "auto" && options.iter().any(|option| option.id == selected) {
+        return selected.to_string();
+    }
+
+    auto_terminal_priority()
+        .iter()
+        .find(|candidate| options.iter().any(|option| option.id == **candidate))
+        .map(|candidate| (*candidate).to_string())
+        .unwrap_or_else(|| "auto".to_string())
+}
+
+pub(crate) fn open_task_terminal_at(
+    cwd: &Path,
+    terminal: &str,
+    task_id: &str,
+) -> Result<TaskTerminalLaunch, String> {
+    let terminal_id = resolve_task_terminal_id(Some(terminal));
+
+    #[cfg(target_os = "windows")]
+    if terminal_id == "windows-terminal" {
+        let focused_existing = open_or_focus_windows_task_terminal(cwd, task_id)?;
+        return Ok(TaskTerminalLaunch {
+            terminal_id,
+            focused_existing,
+        });
+    }
+
+    open_terminal_at(cwd, Some(&terminal_id))?;
+    Ok(TaskTerminalLaunch {
+        terminal_id,
+        focused_existing: false,
+    })
 }
 
 pub(crate) fn resolve_codex_executable(codex_path: Option<String>) -> Result<PathBuf, String> {
@@ -250,6 +303,27 @@ pub(crate) fn resolve_work_path(cwd: Option<String>) -> Result<PathBuf, String> 
 }
 
 #[cfg(target_os = "windows")]
+fn auto_terminal_priority() -> &'static [&'static str] {
+    &["windows-terminal", "pwsh", "powershell", "cmd", "git-bash"]
+}
+
+#[cfg(target_os = "macos")]
+fn auto_terminal_priority() -> &'static [&'static str] {
+    &["terminal", "iterm", "warp"]
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn auto_terminal_priority() -> &'static [&'static str] {
+    &[
+        "x-terminal-emulator",
+        "gnome-terminal",
+        "konsole",
+        "xfce4-terminal",
+        "warp-terminal",
+    ]
+}
+
+#[cfg(target_os = "windows")]
 fn open_terminal_at(cwd: &Path, terminal: Option<&str>) -> Result<(), String> {
     let selected = terminal
         .map(str::trim)
@@ -266,6 +340,121 @@ fn open_terminal_at(cwd: &Path, terminal: Option<&str>) -> Result<(), String> {
     }
 
     open_windows_terminal(selected, cwd)
+}
+
+#[cfg(target_os = "windows")]
+fn open_or_focus_windows_task_terminal(cwd: &Path, task_id: &str) -> Result<bool, String> {
+    let marker = task_terminal_marker(task_id);
+    if focus_window_containing(&marker) {
+        return Ok(true);
+    }
+
+    let executable = require_windows_command("wt.exe")?;
+    let project = cwd
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("项目");
+    let title = format!("{marker} · {}", normalize_window_title(project));
+    let args = [
+        "-w".to_string(),
+        task_terminal_window_name(task_id),
+        "new-tab".to_string(),
+        "--title".to_string(),
+        title,
+        "--suppressApplicationTitle".to_string(),
+        "-d".to_string(),
+        terminal_path_text(cwd),
+    ];
+    spawn_windows_program(&executable, &args, cwd)?;
+    Ok(false)
+}
+
+#[cfg(target_os = "windows")]
+fn task_terminal_marker(task_id: &str) -> String {
+    format!("Codex Pet [{}]", short_task_terminal_id(task_id))
+}
+
+#[cfg(target_os = "windows")]
+fn task_terminal_window_name(task_id: &str) -> String {
+    format!("codex-pet-{}", short_task_terminal_id(task_id))
+}
+
+#[cfg(target_os = "windows")]
+fn short_task_terminal_id(task_id: &str) -> String {
+    task_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .take(32)
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_window_title(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+struct WindowSearch {
+    marker: Vec<u16>,
+    found: HWND,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn find_window_callback(window: HWND, parameter: LPARAM) -> BOOL {
+    if unsafe { IsWindowVisible(window) } == 0 {
+        return 1;
+    }
+    let length = unsafe { GetWindowTextLengthW(window) };
+    if length <= 0 {
+        return 1;
+    }
+
+    let mut title = vec![0_u16; length as usize + 1];
+    let copied = unsafe { GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32) };
+    if copied <= 0 {
+        return 1;
+    }
+
+    let search = unsafe { &mut *(parameter as *mut WindowSearch) };
+    if title[..copied as usize]
+        .windows(search.marker.len())
+        .any(|candidate| candidate == search.marker)
+    {
+        search.found = window;
+        return 0;
+    }
+    1
+}
+
+#[cfg(target_os = "windows")]
+fn focus_window_containing(marker: &str) -> bool {
+    if marker.is_empty() {
+        return false;
+    }
+    let mut search = WindowSearch {
+        marker: marker.encode_utf16().collect(),
+        found: std::ptr::null_mut(),
+    };
+    unsafe {
+        EnumWindows(
+            Some(find_window_callback),
+            &mut search as *mut WindowSearch as LPARAM,
+        );
+    }
+    if search.found.is_null() {
+        return false;
+    }
+
+    unsafe {
+        ShowWindow(search.found, SW_RESTORE);
+        let _ = SetForegroundWindow(search.found);
+    }
+    true
 }
 
 #[cfg(target_os = "windows")]

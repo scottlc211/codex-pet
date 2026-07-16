@@ -5,6 +5,7 @@ const pet: PetCandidate = {
   name: "test",
   path: "/pets/test",
   kind: "package",
+  canDelete: false,
   states: {
     idle: { kind: "image", path: "/pets/test/idle.webp" },
     working: { kind: "image", path: "/pets/test/working.webp" },

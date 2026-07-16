@@ -27,6 +27,8 @@ export type PetCandidate = {
   name: string;
   path: string;
   kind: string;
+  // 只有复制到 Codex Pet 托管目录中的主题才允许从界面删除。
+  canDelete: boolean;
   states: Partial<Record<PetState | string, PetVisual>>;
 };
 

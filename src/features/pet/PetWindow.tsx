@@ -1,6 +1,19 @@
 import type { MouseEventHandler, PointerEventHandler } from "react";
-import { EyeOff, MousePointer2, MousePointer2Off, Power, Settings, X } from "lucide-react";
+import {
+  EyeOff,
+  MousePointer2,
+  MousePointer2Off,
+  Power,
+  Settings,
+  SquareTerminal,
+  X,
+} from "lucide-react";
 import type { RenderMode } from "../../config/preferences";
+import {
+  taskDisplayStatusLabel,
+  taskProjectName,
+  type TaskRecord,
+} from "../tasks/model";
 import { PetVisualView } from "./PetVisualView";
 import type { PetState, PetVisual } from "./model";
 
@@ -19,6 +32,8 @@ type PetWindowProps = {
   visualIdentity: string;
   petSize: number;
   bubble: PetBubble | null;
+  tasks: TaskRecord[];
+  queuedCount: number;
   contextMenuOpen: boolean;
   clickThrough: boolean;
   onPointerDown: PointerEventHandler<HTMLElement>;
@@ -26,6 +41,7 @@ type PetWindowProps = {
   onPointerEnd: PointerEventHandler<HTMLElement>;
   onContextMenu: MouseEventHandler<HTMLElement>;
   onCloseBubble: () => void;
+  onOpenTaskTerminal: (taskId: string) => void;
   onOpenSettings: () => void;
   onHidePet: () => void;
   onToggleClickThrough: () => void;
@@ -39,6 +55,8 @@ export function PetWindow({
   visualIdentity,
   petSize,
   bubble,
+  tasks,
+  queuedCount,
   contextMenuOpen,
   clickThrough,
   onPointerDown,
@@ -46,6 +64,7 @@ export function PetWindow({
   onPointerEnd,
   onContextMenu,
   onCloseBubble,
+  onOpenTaskTerminal,
   onOpenSettings,
   onHidePet,
   onToggleClickThrough,
@@ -62,6 +81,43 @@ export function PetWindow({
         onPointerCancel={onPointerEnd}
         onContextMenu={onContextMenu}
       >
+        {tasks.length > 0 && !bubble && (
+          <div className="pet-task-panel" aria-label="并行任务状态">
+            <div className="pet-task-panel-header">
+              <strong>{tasks.length} 个任务并行</strong>
+              <span aria-live="polite">{queuedCount > 0 ? `另有 ${queuedCount} 个排队` : "全部执行中"}</span>
+            </div>
+            <ul>
+              {tasks.map((task) => {
+                const projectName = taskProjectName(task.cwd);
+                return (
+                  <li key={task.id} data-activity={task.activity ?? "idle"}>
+                    <button
+                      type="button"
+                      title={`打开 ${projectName} 的任务终端`}
+                      aria-label={`打开 ${projectName} 的任务终端，当前状态：${taskDisplayStatusLabel(task)}`}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenTaskTerminal(task.id);
+                      }}
+                    >
+                      <span className="pet-task-state" aria-hidden="true" />
+                      <span className="pet-task-copy">
+                        <strong>{projectName}</strong>
+                        <small aria-live="polite">
+                          {taskDisplayStatusLabel(task)}
+                          {task.statusMessage ? ` · ${task.statusMessage}` : ""}
+                        </small>
+                      </span>
+                      <SquareTerminal size={14} aria-hidden="true" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
         {bubble && (
           <div
             className={`pet-bubble tone-${bubble.tone} ${bubble.dismissible ? "is-dismissible" : ""}`}

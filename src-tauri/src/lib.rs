@@ -9,7 +9,7 @@ mod tray;
 mod windows;
 
 use codex_monitor::start_codex_session_monitor;
-use pets::{find_pet_candidates, import_pet_package};
+use pets::{delete_pet_package, find_pet_candidates, import_pet_package};
 use reminders::{start_reminder_scheduler, ReminderManager};
 use serde::Serialize;
 use serde_json::Value;
@@ -31,6 +31,12 @@ struct CodexPetEvent {
     message: String,
     state: Option<String>,
     session_id: Option<String>,
+}
+
+pub(crate) struct ParsedCodexEvent {
+    pub(crate) state: Option<String>,
+    pub(crate) message: String,
+    pub(crate) codex_session_id: Option<String>,
 }
 
 pub(crate) fn emit_codex_event(
@@ -97,12 +103,28 @@ pub(crate) fn read_bounded_line(
     }
 }
 
-pub(crate) fn handle_codex_json_line(app: &AppHandle, line: &str, session_id: Option<&str>) {
-    let Ok(value) = serde_json::from_str::<Value>(line) else {
+pub(crate) fn handle_codex_json_line(
+    app: &AppHandle,
+    line: &str,
+    session_id: Option<&str>,
+) -> Option<ParsedCodexEvent> {
+    let Some((event_type, parsed)) = parse_codex_json_event(line) else {
         emit_codex_event(app, "log", line, None, session_id.map(str::to_string));
-        return;
+        return None;
     };
 
+    emit_codex_event(
+        app,
+        &event_type,
+        &parsed.message,
+        parsed.state.as_deref(),
+        session_id.map(str::to_string),
+    );
+    Some(parsed)
+}
+
+fn parse_codex_json_event(line: &str) -> Option<(String, ParsedCodexEvent)> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
     let event_type = value.get("type").and_then(Value::as_str).unwrap_or("event");
 
     let (message, state) = match event_type {
@@ -114,13 +136,18 @@ pub(crate) fn handle_codex_json_line(app: &AppHandle, line: &str, session_id: Op
         _ => (event_type.to_string(), None),
     };
 
-    emit_codex_event(
-        app,
-        event_type,
-        &message,
-        state,
-        session_id.map(str::to_string),
-    );
+    let message = normalize_event_message(&message);
+    Some((
+        event_type.to_string(),
+        ParsedCodexEvent {
+            state: state.map(str::to_string),
+            message,
+            codex_session_id: value
+                .get("thread_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
+    ))
 }
 
 fn summarize_item(value: &Value) -> (String, Option<&'static str>) {
@@ -201,9 +228,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             find_pet_candidates,
             import_pet_package,
+            delete_pet_package,
             start_codex_session_monitor,
             task_queue::run_codex_task,
             task_queue::get_task_state,
+            task_queue::open_task_terminal,
             task_queue::cancel_codex_task,
             task_queue::clear_task_history,
             tasks::open_terminal,
@@ -262,5 +291,21 @@ mod tests {
             normalize_event_message(&long).len(),
             MAX_EVENT_MESSAGE_CHARS
         );
+    }
+
+    #[test]
+    fn codex_json_events_keep_per_task_activity_and_session_id() {
+        let (_, started) =
+            parse_codex_json_event(r#"{"type":"thread.started","thread_id":"session-123"}"#)
+                .expect("parse thread event");
+        assert_eq!(started.state.as_deref(), Some("thinking"));
+        assert_eq!(started.codex_session_id.as_deref(), Some("session-123"));
+
+        let (_, command) = parse_codex_json_event(
+            r#"{"type":"item.started","item":{"type":"command_execution","command":"pnpm test"}}"#,
+        )
+        .expect("parse command event");
+        assert_eq!(command.state.as_deref(), Some("running_command"));
+        assert_eq!(command.message, "运行命令：pnpm test");
     }
 }

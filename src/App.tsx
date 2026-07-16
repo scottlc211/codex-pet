@@ -26,7 +26,11 @@ import {
 import { useDiagnostics } from "./features/diagnostics/useDiagnostics";
 import { defaultReminderConfig, type ReminderConfig } from "./features/reminders/model";
 import { useReminderState } from "./features/reminders/useReminderState";
-import { type TaskSubmission } from "./features/tasks/model";
+import {
+  isTaskExecuting,
+  type TaskActivity,
+  type TaskSubmission,
+} from "./features/tasks/model";
 import { useTaskQueue } from "./features/tasks/useTaskQueue";
 import { PetWindow, type PetBubble } from "./features/pet/PetWindow";
 import {
@@ -46,7 +50,10 @@ import {
   SettingsWindow,
   type SettingsSection,
 } from "./features/settings/SettingsWindow";
-import { ThemeSettings } from "./features/settings/ThemeSettings";
+import {
+  ThemeDeleteConfirmation,
+  ThemeSettings,
+} from "./features/settings/ThemeSettings";
 import { WorkSettings, type TerminalOption } from "./features/settings/WorkSettings";
 import { isTauriRuntime, releaseTauriListener } from "./runtime/tauri";
 import {
@@ -87,7 +94,9 @@ type DragSession = {
   pendingFrame: number | null;
 };
 
-const petBubbleReserve = 72;
+const petStatusBubbleReserve = 72;
+const petTaskPanelBaseReserve = 38;
+const petTaskPanelRowReserve = 32;
 const autoTerminal: TerminalOption = { id: autoTerminalId, label: "自动选择" };
 const isSettingsWindow = isTauriRuntime && getCurrentWindow().label === "settings";
 
@@ -125,9 +134,11 @@ function App() {
   const [settingsModalPosition, setSettingsModalPosition] = useState<ModalPosition | null>(null);
   const [task, setTask] = useState("");
   const [importing, setImporting] = useState(false);
+  const [deletingTheme, setDeletingTheme] = useState(false);
   const [petBubble, setPetBubble] = useState<PetBubble | null>(null);
   const [activePet, setActivePet] = useState<PetCandidate | null>(null);
   const [candidates, setCandidates] = useState<PetCandidate[]>([]);
+  const [pendingThemeDelete, setPendingThemeDelete] = useState<PetCandidate | null>(null);
   const idleTimerRef = useRef<number | null>(null);
   const idleAfterDragRef = useRef(false);
   const petBubbleReserveRef = useRef(0);
@@ -149,8 +160,21 @@ function App() {
       isDragging,
       onStateMessage: updatePetBubble,
     });
-  const { taskState, hasActiveTasks, cancelTask, clearTaskHistory } = useTaskQueue({ pushEvent });
+  const {
+    taskState,
+    hasActiveTasks,
+    openTaskTerminal,
+    cancelTask,
+    clearTaskHistory,
+  } = useTaskQueue({ pushEvent });
   const running = codexRunning || hasActiveTasks;
+  const executingTasks = useMemo(
+    () =>
+      taskState.tasks
+        .filter((item) => isTaskExecuting(item.status))
+        .slice(0, taskState.maxConcurrentTasks),
+    [taskState.maxConcurrentTasks, taskState.tasks],
+  );
   const {
     reminderSnapshots,
     reminderDraft,
@@ -184,26 +208,36 @@ function App() {
     pushEvent,
   });
 
+  const petDisplayState =
+    executingTasks.length > 0 && matchesTerminalPetState(currentState)
+      ? taskActivityPetState(executingTasks[0].activity)
+      : currentState;
+  const visiblePetBubble =
+    petBubble?.source === "reminder" || executingTasks.length === 0 ? petBubble : null;
+  const petOverlayReserve = visiblePetBubble
+    ? petStatusBubbleReserve
+    : executingTasks.length > 0
+      ? petTaskPanelBaseReserve + executingTasks.length * petTaskPanelRowReserve
+      : 0;
   const visual = useMemo(() => {
     if (!activePet) {
       return null;
     }
 
-    return resolveVisual(activePet, currentState);
-  }, [activePet, currentState]);
+    return resolveVisual(activePet, petDisplayState);
+  }, [activePet, petDisplayState]);
 
   const latestMessage = events[events.length - 1]?.message ?? "准备就绪";
   const statusLabel = stateLabels[currentState] ?? "空闲";
-  const bubbleVisible = petBubble !== null;
   const visualIdentity = visual
-    ? `${visual.kind}-${visual.path}-${visual.row ?? "single"}-${currentState}`
-    : `default-${currentState}`;
+    ? `${visual.kind}-${visual.path}-${visual.row ?? "single"}-${petDisplayState}`
+    : `default-${petDisplayState}`;
   const shellStyle = {
     "--pet-size": `${petSize}px`,
     "--pet-container-width": `${petContainerWidth}px`,
     "--pet-container-height": `${petContainerHeight}px`,
-    "--pet-bubble-reserve": `${bubbleVisible ? petBubbleReserve : 0}px`,
-    "--pet-bubble-shift": `${bubbleVisible ? petBubbleReserve / 2 : 0}px`,
+    "--pet-bubble-reserve": `${petOverlayReserve}px`,
+    "--pet-bubble-shift": `${petOverlayReserve / 2}px`,
     "--pet-visual-offset-x": `${petOffsetX}px`,
     "--pet-visual-offset-y": `${petOffsetY}px`,
   } as CSSProperties;
@@ -326,13 +360,13 @@ function App() {
       return;
     }
 
-    const nextLayoutKey = `${petContainerWidth}:${petContainerHeight}:${bubbleVisible ? "bubble" : "plain"}`;
+    const nextLayoutKey = `${petContainerWidth}:${petContainerHeight}:${petOverlayReserve}`;
     if (windowLayoutKeyRef.current === nextLayoutKey) {
       return;
     }
     windowLayoutKeyRef.current = nextLayoutKey;
 
-    const nextBubbleReserve = bubbleVisible ? petBubbleReserve : 0;
+    const nextBubbleReserve = petOverlayReserve;
     const previousBubbleReserve = petBubbleReserveRef.current;
     void resizePetWindow(
       petContainerWidth,
@@ -347,7 +381,7 @@ function App() {
         pushEvent({ kind: "window.resize.error", message: String(error), state: "error" });
         recordDiagnosticEvent("error", "windows", `failed to resize pet window: ${String(error)}`);
       });
-  }, [petContainerWidth, petContainerHeight, bubbleVisible]);
+  }, [petContainerWidth, petContainerHeight, petOverlayReserve]);
 
   useEffect(() => {
     return () => {
@@ -449,16 +483,19 @@ function App() {
 
     try {
       const submission = await invoke<TaskSubmission>("run_codex_task", {
-        prompt: task,
-        cwd: workdir || null,
-        codexPath: codexPath.trim() || null,
-        timeoutMinutes: clampTaskTimeoutMinutes(taskTimeoutMinutes),
-        maxRetries: clampTaskRetries(taskMaxRetries),
+        request: {
+          prompt: task,
+          cwd: workdir || null,
+          codexPath: codexPath.trim() || null,
+          terminalId,
+          timeoutMinutes: clampTaskTimeoutMinutes(taskTimeoutMinutes),
+          maxRetries: clampTaskRetries(taskMaxRetries),
+        },
       });
       setTask("");
       pushEvent({
         kind: "task.submitted",
-        message: "任务已加入执行队列",
+        message: `任务已提交，最多 ${taskState.maxConcurrentTasks} 个并行执行`,
         state: "thinking",
         sessionId: submission.taskId,
       });
@@ -876,6 +913,54 @@ function App() {
     pushEvent({ kind: "pet.selected", message: "已选择：默认主题", state: "idle" });
   }
 
+  function requestThemeDeletion(candidate: PetCandidate) {
+    if (!candidate.canDelete || deletingTheme) {
+      return;
+    }
+    setPendingThemeDelete(candidate);
+  }
+
+  function cancelThemeDeletion() {
+    if (!deletingTheme) {
+      setPendingThemeDelete(null);
+    }
+  }
+
+  async function confirmThemeDeletion() {
+    const candidate = pendingThemeDelete;
+    if (!candidate || deletingTheme || !candidate.canDelete) {
+      return;
+    }
+
+    if (!isTauriRuntime) {
+      pushEvent({ kind: "browser", message: "浏览器预览不支持卸载本地主题", state: "idle" });
+      return;
+    }
+
+    setDeletingTheme(true);
+    try {
+      await invoke("delete_pet_package", { candidatePath: candidate.path });
+      setCandidates((current) => current.filter((item) => item.path !== candidate.path));
+      if (selectedPetPath === candidate.path) {
+        setActivePet(null);
+        updatePetPreference("packagePath", "");
+      } else if (packagePath === candidate.path) {
+        setPackagePath("");
+      }
+      setPendingThemeDelete(null);
+      setCurrentState("success");
+      pushEvent({ kind: "theme.deleted", message: `已卸载：${candidate.name}`, state: "success" });
+      scheduleIdle();
+    } catch (error) {
+      const message = String(error);
+      setCurrentState("error");
+      pushEvent({ kind: "theme.delete.error", message, state: "error" });
+      scheduleIdle();
+    } finally {
+      setDeletingTheme(false);
+    }
+  }
+
   async function openTerminal() {
     if (!isTauriRuntime) {
       pushEvent({ kind: "browser", message: "浏览器预览不支持打开终端", state: "idle" });
@@ -1023,12 +1108,14 @@ function App() {
     >
       {!isSettingsWindow && (
         <PetWindow
-          state={currentState}
+          state={petDisplayState}
           renderMode={renderMode}
           visual={visual}
           visualIdentity={visualIdentity}
           petSize={petSize}
-          bubble={petBubble}
+          bubble={visiblePetBubble}
+          tasks={executingTasks}
+          queuedCount={taskState.queuedCount}
           contextMenuOpen={contextMenuOpen}
           clickThrough={clickThrough}
           onPointerDown={startPetDrag}
@@ -1036,6 +1123,7 @@ function App() {
           onPointerEnd={endPetDrag}
           onContextMenu={openContextMenu}
           onCloseBubble={closePetBubble}
+          onOpenTaskTerminal={openTaskTerminal}
           onOpenSettings={openSettingsModal}
           onHidePet={hideMainWindow}
           onToggleClickThrough={toggleClickThrough}
@@ -1058,7 +1146,14 @@ function App() {
           onPointerMove={moveSettingsModal}
           onPointerEnd={endSettingsModalDrag}
           overlay={
-            pendingReminderDelete ? (
+            pendingThemeDelete ? (
+              <ThemeDeleteConfirmation
+                theme={pendingThemeDelete}
+                deleting={deletingTheme}
+                onCancel={cancelThemeDeletion}
+                onConfirm={confirmThemeDeletion}
+              />
+            ) : pendingReminderDelete ? (
               <ReminderDeleteConfirmation
                 reminder={pendingReminderDelete}
                 onCancel={cancelReminderDeletion}
@@ -1092,6 +1187,7 @@ function App() {
                 onRefresh={refreshCandidates}
                 onSelectDefault={selectDefaultPet}
                 onSelect={selectCandidate}
+                onRequestDelete={requestThemeDeletion}
                 onPackagePathChange={setPackagePath}
                 onImport={importPackage}
               />
@@ -1136,6 +1232,7 @@ function App() {
                 onPickCodexExecutable={pickCodexExecutable}
                 onPickWorkPath={pickWorkPath}
                 onOpenTerminal={openTerminal}
+                onOpenTaskTerminal={openTaskTerminal}
                 onCancelTask={cancelTask}
                 onClearTaskHistory={clearTaskHistory}
                 onSubmit={submitTask}
@@ -1153,6 +1250,28 @@ function normalizeBubbleMessage(message: string, fallback: string) {
     return fallback;
   }
   return text.length > 34 ? `${text.slice(0, 33)}...` : text;
+}
+
+function matchesTerminalPetState(state: PetState) {
+  return state === "idle" || state === "success" || state === "error";
+}
+
+function taskActivityPetState(activity: TaskActivity | null): PetState {
+  switch (activity) {
+    case "thinking":
+    case "working":
+    case "running_command":
+    case "editing_file":
+    case "waiting_input":
+    case "success":
+    case "error":
+      return activity;
+    case "queued":
+      return "thinking";
+    case "idle":
+    case null:
+      return "working";
+  }
 }
 
 export default App;

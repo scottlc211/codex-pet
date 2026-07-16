@@ -11,7 +11,7 @@ use std::{
 };
 use zip::ZipArchive;
 
-static IMPORT_RUNNING: AtomicBool = AtomicBool::new(false);
+static PET_STORAGE_MUTATION_RUNNING: AtomicBool = AtomicBool::new(false);
 
 const MAX_ZIP_BYTES: u64 = 80 * 1024 * 1024;
 const MAX_EXTRACTED_FILE_BYTES: u64 = 30 * 1024 * 1024;
@@ -29,6 +29,7 @@ pub(crate) struct PetCandidate {
     name: String,
     path: String,
     kind: String,
+    can_delete: bool,
     states: BTreeMap<String, PetVisual>,
 }
 
@@ -44,7 +45,7 @@ struct PetVisual {
     frame_height: Option<u32>,
 }
 
-struct ImportRunGuard;
+struct PetStorageMutationGuard;
 
 #[derive(Default)]
 struct ImportBudget {
@@ -53,18 +54,18 @@ struct ImportBudget {
     total_bytes: u64,
 }
 
-impl ImportRunGuard {
+impl PetStorageMutationGuard {
     fn try_start() -> Result<Self, String> {
-        IMPORT_RUNNING
+        PET_STORAGE_MUTATION_RUNNING
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|_| "已有宠物资源正在导入".to_string())?;
+            .map_err(|_| "已有主题正在导入或删除".to_string())?;
         Ok(Self)
     }
 }
 
-impl Drop for ImportRunGuard {
+impl Drop for PetStorageMutationGuard {
     fn drop(&mut self) {
-        IMPORT_RUNNING.store(false, Ordering::SeqCst);
+        PET_STORAGE_MUTATION_RUNNING.store(false, Ordering::SeqCst);
     }
 }
 
@@ -149,7 +150,7 @@ pub(crate) async fn import_pet_package(source_path: String) -> Result<PetCandida
 }
 
 fn import_pet_package_blocking(source_path: String) -> Result<PetCandidate, String> {
-    let _import_guard = ImportRunGuard::try_start()?;
+    let _storage_guard = PetStorageMutationGuard::try_start()?;
     let source = clean_user_path(&source_path)
         .canonicalize()
         .map_err(|error| format!("解析导入路径失败：{error}"))?;
@@ -187,6 +188,41 @@ fn import_pet_package_blocking(source_path: String) -> Result<PetCandidate, Stri
     }
 
     Err("路径不存在".to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn delete_pet_package(candidate_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || delete_pet_package_blocking(candidate_path))
+        .await
+        .map_err(|error| format!("等待主题删除任务失败：{error}"))?
+}
+
+fn delete_pet_package_blocking(candidate_path: String) -> Result<(), String> {
+    let _storage_guard = PetStorageMutationGuard::try_start()?;
+    let root = managed_pet_root().ok_or_else(|| "无法定位主题存储目录".to_string())?;
+    let candidate = clean_user_path(&candidate_path);
+    delete_managed_pet_candidate(&root, &candidate)
+}
+
+fn delete_managed_pet_candidate(root: &Path, candidate: &Path) -> Result<(), String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("解析主题存储目录失败：{error}"))?;
+    let target = managed_pet_delete_target(&root, candidate)?;
+    let metadata =
+        fs::symlink_metadata(&target).map_err(|error| format!("读取待删除主题失败：{error}"))?;
+
+    let result = if metadata.file_type().is_dir() {
+        fs::remove_dir_all(&target).map_err(|error| format!("删除主题失败：{error}"))
+    } else {
+        fs::remove_file(&target).map_err(|error| format!("删除主题失败：{error}"))
+    };
+    result?;
+
+    if let Some(parent) = target.parent() {
+        prune_empty_pet_directories(parent.to_path_buf(), &root);
+    }
+    Ok(())
 }
 
 fn import_pet_directory(source: &Path) -> Result<PetCandidate, String> {
@@ -240,6 +276,46 @@ fn pet_roots() -> Vec<PathBuf> {
     }
 
     roots
+}
+
+fn managed_pet_root() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".codex-pet").join("pets"))
+}
+
+fn can_delete_pet_candidate(path: &Path) -> bool {
+    managed_pet_root().is_some_and(|root| managed_pet_delete_target(&root, path).is_ok())
+}
+
+fn managed_pet_delete_target(root: &Path, candidate: &Path) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("解析主题存储目录失败：{error}"))?;
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|error| format!("解析待删除主题失败：{error}"))?;
+    let relative = candidate
+        .strip_prefix(&root)
+        .map_err(|_| "只能删除通过 Codex Pet 导入的主题".to_string())?;
+    if relative.as_os_str().is_empty() {
+        return Err("不能删除主题存储目录".to_string());
+    }
+
+    Ok(candidate)
+}
+
+fn prune_empty_pet_directories(mut directory: PathBuf, root: &Path) {
+    while directory != root && directory.starts_with(root) {
+        let is_empty = fs::read_dir(&directory)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if !is_empty || fs::remove_dir(&directory).is_err() {
+            break;
+        }
+        let Some(parent) = directory.parent() else {
+            break;
+        };
+        directory = parent.to_path_buf();
+    }
 }
 
 fn collect_pet_packages(
@@ -363,6 +439,7 @@ fn load_pet_package_from_dir(package_dir: &Path) -> Option<PetCandidate> {
                 name,
                 path: package_dir.to_string_lossy().to_string(),
                 kind: "state-package".to_string(),
+                can_delete: can_delete_pet_candidate(package_dir),
                 states: resolved_states,
             });
         }
@@ -374,6 +451,7 @@ fn load_pet_package_from_dir(package_dir: &Path) -> Option<PetCandidate> {
         name,
         path: package_dir.to_string_lossy().to_string(),
         kind: "codex-pet-atlas".to_string(),
+        can_delete: can_delete_pet_candidate(package_dir),
         states: codex_atlas_states(&spritesheet),
     })
 }
@@ -537,6 +615,7 @@ fn load_image_file_as_pet(path: &Path) -> Option<PetCandidate> {
         name,
         path: path.to_string_lossy().to_string(),
         kind: "image".to_string(),
+        can_delete: can_delete_pet_candidate(path),
         states,
     })
 }
@@ -955,6 +1034,32 @@ mod tests {
                 .expect("canonical image")
         );
         assert!(resolve_package_file(&package, "../outside.png").is_none());
+    }
+
+    #[test]
+    fn managed_theme_deletion_removes_only_the_selected_candidate() {
+        let temp = TestDirectory::new("managed-delete-target");
+        let root = temp.0.join("pets");
+        let import = root.join("theme-123");
+        let nested_package = import.join("package");
+        let sibling = import.join("keep.png");
+        let outside = temp.0.join("outside");
+        fs::create_dir_all(&nested_package).expect("create managed theme");
+        fs::write(&sibling, b"keep").expect("create sibling theme");
+        fs::create_dir_all(&outside).expect("create outside directory");
+
+        let target = managed_pet_delete_target(&root, &nested_package)
+            .expect("resolve managed theme candidate");
+        assert_eq!(
+            target,
+            nested_package.canonicalize().expect("canonical theme")
+        );
+        assert!(managed_pet_delete_target(&root, &root).is_err());
+        assert!(managed_pet_delete_target(&root, &outside).is_err());
+
+        delete_managed_pet_candidate(&root, &nested_package).expect("delete managed theme");
+        assert!(!nested_package.exists());
+        assert!(sibling.exists());
     }
 
     #[cfg(unix)]

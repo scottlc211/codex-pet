@@ -488,6 +488,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tempfile",
+ "windows-sys 0.59.0",
  "zip",
 ]
 

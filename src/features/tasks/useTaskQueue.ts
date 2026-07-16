@@ -3,7 +3,12 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
 import type { CodexEvent } from "../pet/model";
 import { isTauriRuntime, releaseTauriListener } from "../../runtime/tauri";
-import { emptyTaskState, isTaskActive, type TaskStateSnapshot } from "./model";
+import {
+  emptyTaskState,
+  isTaskActive,
+  type TaskStateSnapshot,
+  type TaskTerminalOpenResult,
+} from "./model";
 
 type UseTaskQueueOptions = {
   pushEvent: (event: CodexEvent) => void;
@@ -43,6 +48,23 @@ export function useTaskQueue({ pushEvent }: UseTaskQueueOptions) {
     }
   }
 
+  async function openTaskTerminal(taskId: string) {
+    if (!isTauriRuntime) {
+      return;
+    }
+    try {
+      const opened = await invoke<TaskTerminalOpenResult>("open_task_terminal", { taskId });
+      pushEvent({
+        kind: "task.terminal.opened",
+        message: opened.focusedExisting ? "已定位任务终端" : "已打开任务终端",
+        state: "idle",
+        sessionId: taskId,
+      });
+    } catch (error) {
+      pushEvent({ kind: "task.terminal.error", message: String(error), state: "error" });
+    }
+  }
+
   async function clearTaskHistory() {
     if (!isTauriRuntime) {
       return;
@@ -57,6 +79,7 @@ export function useTaskQueue({ pushEvent }: UseTaskQueueOptions) {
   return {
     taskState,
     hasActiveTasks,
+    openTaskTerminal,
     cancelTask,
     clearTaskHistory,
   };
