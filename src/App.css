@@ -400,13 +400,16 @@ button {
 }
 
 .pet-atlas-wrap {
-  display: grid;
-  place-items: center;
+  position: relative;
+  display: block;
   overflow: visible;
   background: transparent;
 }
 
 .pet-atlas {
+  position: absolute;
+  left: 50%;
+  top: 50%;
   width: var(--frame-width);
   height: var(--frame-height);
   box-shadow: none;
@@ -415,7 +418,7 @@ button {
   background-repeat: no-repeat;
   background-size: var(--atlas-width) var(--atlas-height);
   background-position-y: var(--atlas-row-offset);
-  transform: scale(var(--atlas-scale));
+  transform: translate(-50%, -50%) scale(var(--atlas-scale));
   transform-origin: center;
   animation: atlas-steps var(--atlas-duration) steps(var(--atlas-frames)) infinite;
 }
