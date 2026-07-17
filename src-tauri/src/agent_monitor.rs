@@ -255,6 +255,11 @@ fn parse_hook_payload(
         HookProvider::Grok => ("hookEventName", "sessionId"),
     };
     let event_name = required_bounded_text(object, event_key, MAX_AGENT_FIELD_CHARS)?;
+    // Grok 的配置事件名使用 PascalCase，但 Hook stdin 中使用 snake_case。
+    let event_name = match provider {
+        HookProvider::Claude => event_name,
+        HookProvider::Grok => normalize_grok_event_name(&event_name).to_string(),
+    };
     let session_id = required_bounded_text(object, session_key, MAX_SESSION_ID_CHARS)?;
 
     let (agent_id, agent_type, tool_name, notification_type) = match provider {
@@ -285,6 +290,26 @@ fn parse_hook_payload(
         notification_type,
         received_at: current_timestamp_ms(),
     })
+}
+
+fn normalize_grok_event_name(event_name: &str) -> &str {
+    match event_name {
+        "session_start" => "SessionStart",
+        "user_prompt_submit" => "UserPromptSubmit",
+        "pre_tool_use" => "PreToolUse",
+        "post_tool_use" => "PostToolUse",
+        "post_tool_use_failure" => "PostToolUseFailure",
+        "permission_denied" => "PermissionDenied",
+        "notification" => "Notification",
+        "subagent_start" => "SubagentStart",
+        "subagent_stop" | "subagent_end" => "SubagentStop",
+        "pre_compact" => "PreCompact",
+        "post_compact" => "PostCompact",
+        "stop" => "Stop",
+        "stop_failure" => "StopFailure",
+        "session_end" => "SessionEnd",
+        _ => event_name,
+    }
 }
 
 fn required_bounded_text(
@@ -458,6 +483,14 @@ fn process_captured_hook(app: &AppHandle, captured: CapturedHookEvent) {
         return;
     };
     let Some(mapped) = map_hook_event(provider, &captured) else {
+        diagnostics::warn(
+            "monitor",
+            &format!(
+                "ignored unsupported {} hook event {}",
+                provider.label(),
+                captured.event_name
+            ),
+        );
         return;
     };
 
@@ -481,8 +514,10 @@ fn map_hook_event(provider: HookProvider, captured: &CapturedHookEvent) -> Optio
         "PreToolUse" => {
             let tool = captured.tool_name.as_deref().unwrap_or("工具");
             let state = match tool {
-                "Edit" | "Write" | "NotebookEdit" => "editing_file",
-                "Bash" => "running_command",
+                "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "search_replace" => {
+                    "editing_file"
+                }
+                "Bash" | "run_terminal_command" => "running_command",
                 _ => "working",
             };
             (Some(state), format!("{label} 正在运行 {tool}"))
@@ -826,13 +861,64 @@ mod tests {
     #[test]
     fn detects_grok_payload_loaded_through_claude_compatible_hook() {
         let value = json!({
-            "hookEventName": "UserPromptSubmit",
+            "hookEventName": "user_prompt_submit",
             "sessionId": "grok-session",
             "cwd": "/workspace/project"
         });
         let event = parse_hook_payload(HookProvider::Claude, &value).expect("parse Grok hook");
         assert_eq!(event.provider, "grok");
         assert_eq!(event.event_name, "UserPromptSubmit");
+    }
+
+    #[test]
+    fn normalizes_documented_grok_event_names() {
+        let cases = [
+            ("session_start", "SessionStart"),
+            ("user_prompt_submit", "UserPromptSubmit"),
+            ("pre_tool_use", "PreToolUse"),
+            ("post_tool_use", "PostToolUse"),
+            ("post_tool_use_failure", "PostToolUseFailure"),
+            ("permission_denied", "PermissionDenied"),
+            ("notification", "Notification"),
+            ("subagent_start", "SubagentStart"),
+            ("subagent_stop", "SubagentStop"),
+            ("pre_compact", "PreCompact"),
+            ("post_compact", "PostCompact"),
+            ("stop", "Stop"),
+            ("stop_failure", "StopFailure"),
+            ("session_end", "SessionEnd"),
+        ];
+
+        for (native, canonical) in cases {
+            assert_eq!(normalize_grok_event_name(native), canonical);
+        }
+    }
+
+    #[test]
+    fn maps_grok_native_tool_names_to_activity_states() {
+        let value = json!({
+            "hookEventName": "pre_tool_use",
+            "sessionId": "grok-session",
+            "cwd": "/workspace/project",
+            "toolName": "run_terminal_command"
+        });
+        let command = parse_hook_payload(HookProvider::Grok, &value).expect("parse Grok hook");
+        assert_eq!(command.event_name, "PreToolUse");
+        assert_eq!(
+            map_hook_event(HookProvider::Grok, &command)
+                .expect("map Grok command")
+                .state,
+            Some("running_command")
+        );
+
+        let mut edit = command;
+        edit.tool_name = Some("search_replace".to_string());
+        assert_eq!(
+            map_hook_event(HookProvider::Grok, &edit)
+                .expect("map Grok edit")
+                .state,
+            Some("editing_file")
+        );
     }
 
     #[test]
