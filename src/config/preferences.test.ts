@@ -4,6 +4,7 @@ import {
   appPreferencesKey,
   loadAppPreferences,
   loadAppPreferencesWithStatus,
+  normalizePetPreferences,
   saveAppPreferences,
 } from "./preferences";
 
@@ -142,6 +143,38 @@ describe("app preferences", () => {
       }),
     );
     expect(loadAppPreferences(storage).pet.clickThrough).toBe(true);
+  });
+
+  it("normalizes per-theme state action overrides", () => {
+    expect(
+      normalizePetPreferences({
+        stateActionOverrides: {
+          "/pets/cat": {
+            idle: "working",
+            waiting_input: "waiting",
+            unknown: "idle",
+            error: 42,
+          },
+          "": { idle: "working" },
+          "/pets/broken": "idle",
+        },
+      }).stateActionOverrides,
+    ).toEqual({
+      "/pets/cat": {
+        idle: "working",
+        waiting_input: "waiting",
+      },
+    });
+  });
+
+  it("adds empty state action overrides to older schema v1 preferences", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(
+      appPreferencesKey,
+      JSON.stringify({ schemaVersion: 1, pet: {}, work: {} }),
+    );
+
+    expect(loadAppPreferences(storage).pet.stateActionOverrides).toEqual({});
   });
 
   it("returns storage errors instead of throwing", () => {

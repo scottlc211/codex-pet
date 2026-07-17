@@ -38,10 +38,14 @@ import { useTaskQueue } from "./features/tasks/useTaskQueue";
 import { PetWindow, type PetBubble } from "./features/pet/PetWindow";
 import {
   activeTaskStates,
+  applyPetStateOverrides,
+  getPetActionOptions,
   resolveVisual,
   stateLabels,
   type PetCandidate,
   type PetState,
+  type PetStateActionMap,
+  type PetStateActionOverrides,
 } from "./features/pet/model";
 import { GeneralSettings } from "./features/settings/GeneralSettings";
 import {
@@ -101,6 +105,7 @@ const petTaskPanelBaseReserve = 38;
 const petTaskPanelRowReserve = 32;
 const maxPetProgressRows = 6;
 const autoTerminal: TerminalOption = { id: autoTerminalId, label: "自动选择" };
+const emptyPetStateActionMap: PetStateActionMap = {};
 const isSettingsWindow = isTauriRuntime && getCurrentWindow().label === "settings";
 
 function App() {
@@ -123,6 +128,9 @@ function App() {
   const [clickThrough, setClickThrough] = useState(initialPreferences.pet.clickThrough);
   const [mainWindowVisible, setMainWindowVisible] = useState(true);
   const [renderMode, setRenderMode] = useState<RenderMode>(initialPreferences.pet.renderMode);
+  const [stateActionOverrides, setStateActionOverrides] = useState<PetStateActionOverrides>(
+    initialPreferences.pet.stateActionOverrides,
+  );
   const [terminalId, setTerminalId] = useState(initialPreferences.work.terminalId);
   const [taskTimeoutMinutes, setTaskTimeoutMinutes] = useState(
     initialPreferences.work.taskTimeoutMinutes,
@@ -246,13 +254,20 @@ function App() {
     : showPetProgressPanel
       ? petTaskPanelBaseReserve + petProgressRowCount * petTaskPanelRowReserve
       : 0;
+  const configuredActivePet = useMemo(
+    () =>
+      activePet
+        ? applyPetStateOverrides(activePet, stateActionOverrides[activePet.path])
+        : null,
+    [activePet, stateActionOverrides],
+  );
   const visual = useMemo(() => {
-    if (!activePet) {
+    if (!configuredActivePet) {
       return null;
     }
 
-    return resolveVisual(activePet, petDisplayState);
-  }, [activePet, petDisplayState]);
+    return resolveVisual(configuredActivePet, petDisplayState);
+  }, [configuredActivePet, petDisplayState]);
 
   const latestMessage = events[events.length - 1]?.message ?? "准备就绪";
   const statusLabel = stateLabels[currentState] ?? "空闲";
@@ -277,6 +292,7 @@ function App() {
     clickThrough,
     renderMode,
     packagePath: selectedPetPath,
+    stateActionOverrides,
   };
   petPreferencesRef.current = petPreferences;
   const settingsModalStyle = settingsModalPosition
@@ -375,6 +391,7 @@ function App() {
     clickThrough,
     renderMode,
     selectedPetPath,
+    stateActionOverrides,
     workdir,
     codexPath,
     terminalId,
@@ -544,6 +561,7 @@ function App() {
     setClickThrough(preferences.clickThrough);
     setRenderMode(preferences.renderMode);
     setSelectedPetPath(preferences.packagePath);
+    setStateActionOverrides(preferences.stateActionOverrides);
     if (updatePathDraft) {
       setPackagePath(preferences.packagePath);
     }
@@ -940,6 +958,45 @@ function App() {
     pushEvent({ kind: "pet.selected", message: "已选择：默认主题", state: "idle" });
   }
 
+  function updateStateActionOverride(state: PetState, sourceAction: string | null) {
+    const pet = activePet;
+    if (!pet) {
+      return;
+    }
+    if (sourceAction && !getPetActionOptions(pet).some((option) => option.key === sourceAction)) {
+      pushEvent({
+        kind: "pet.action.invalid",
+        message: `动作 ${sourceAction} 不存在或格式不符合要求`,
+        state: "error",
+      });
+      return;
+    }
+
+    const nextOverrides = { ...petPreferencesRef.current.stateActionOverrides };
+    const themeOverrides = { ...(nextOverrides[pet.path] ?? {}) };
+    if (sourceAction) {
+      themeOverrides[state] = sourceAction;
+    } else {
+      delete themeOverrides[state];
+    }
+    if (Object.keys(themeOverrides).length > 0) {
+      nextOverrides[pet.path] = themeOverrides;
+    } else {
+      delete nextOverrides[pet.path];
+    }
+    updatePetPreference("stateActionOverrides", nextOverrides);
+  }
+
+  function resetActivePetStateActions() {
+    const pet = activePet;
+    if (!pet || !petPreferencesRef.current.stateActionOverrides[pet.path]) {
+      return;
+    }
+    const nextOverrides = { ...petPreferencesRef.current.stateActionOverrides };
+    delete nextOverrides[pet.path];
+    updatePetPreference("stateActionOverrides", nextOverrides);
+  }
+
   function requestThemeDeletion(candidate: PetCandidate) {
     if (!candidate.canDelete || deletingTheme) {
       return;
@@ -968,6 +1025,11 @@ function App() {
     try {
       await invoke("delete_pet_package", { candidatePath: candidate.path });
       setCandidates((current) => current.filter((item) => item.path !== candidate.path));
+      if (petPreferencesRef.current.stateActionOverrides[candidate.path]) {
+        const nextOverrides = { ...petPreferencesRef.current.stateActionOverrides };
+        delete nextOverrides[candidate.path];
+        updatePetPreference("stateActionOverrides", nextOverrides);
+      }
       if (selectedPetPath === candidate.path) {
         setActivePet(null);
         updatePetPreference("packagePath", "");
@@ -1213,12 +1275,19 @@ function App() {
                 packagePath={packagePath}
                 importing={importing}
                 renderMode={renderMode}
+                stateActionOverrides={
+                  activePet
+                    ? (stateActionOverrides[activePet.path] ?? emptyPetStateActionMap)
+                    : emptyPetStateActionMap
+                }
                 onRefresh={refreshCandidates}
                 onSelectDefault={selectDefaultPet}
                 onSelect={selectCandidate}
                 onRequestDelete={requestThemeDeletion}
                 onPackagePathChange={setPackagePath}
                 onImport={importPackage}
+                onStateActionChange={updateStateActionOverride}
+                onResetStateActions={resetActivePetStateActions}
               />
             )}
 

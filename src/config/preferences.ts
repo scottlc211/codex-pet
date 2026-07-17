@@ -1,3 +1,8 @@
+import {
+  isPetState,
+  type PetStateActionOverrides,
+} from "../features/pet/model";
+
 export type RenderMode = "smooth" | "pixelated";
 
 export type PetPreferences = {
@@ -9,6 +14,7 @@ export type PetPreferences = {
   clickThrough: boolean;
   renderMode: RenderMode;
   packagePath: string;
+  stateActionOverrides: PetStateActionOverrides;
 };
 
 export type WorkPreferences = {
@@ -76,6 +82,7 @@ const defaultPetPreferences: PetPreferences = {
   clickThrough: false,
   renderMode: "smooth",
   packagePath: "",
+  stateActionOverrides: {},
 };
 
 const defaultWorkPreferences: WorkPreferences = {
@@ -180,7 +187,7 @@ export function saveAppPreferences(
 export function defaultAppPreferences(): AppPreferences {
   return {
     schemaVersion: 1,
-    pet: { ...defaultPetPreferences },
+    pet: { ...defaultPetPreferences, stateActionOverrides: {} },
     work: { ...defaultWorkPreferences },
   };
 }
@@ -214,6 +221,7 @@ export function normalizePetPreferences(value: unknown): PetPreferences {
     clickThrough: preferences.clickThrough === true,
     renderMode: preferences.renderMode === "pixelated" ? "pixelated" : "smooth",
     packagePath: stringValue(preferences.packagePath, defaultPetPreferences.packagePath),
+    stateActionOverrides: normalizeStateActionOverrides(preferences.stateActionOverrides),
   };
 }
 
@@ -288,6 +296,27 @@ function stringValue(value: unknown, fallback: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeStateActionOverrides(value: unknown): PetStateActionOverrides {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([themePath, rawOverrides]) => {
+      if (!themePath.trim() || !isRecord(rawOverrides)) {
+        return [];
+      }
+      const stateOverrides = Object.fromEntries(
+        Object.entries(rawOverrides).filter(
+          (entry): entry is [string, string] =>
+            isPetState(entry[0]) && typeof entry[1] === "string" && Boolean(entry[1].trim()),
+        ),
+      );
+      return Object.keys(stateOverrides).length > 0 ? [[themePath, stateOverrides]] : [];
+    }),
+  ) as PetStateActionOverrides;
 }
 
 function clamp(value: number, min: number, max: number) {
