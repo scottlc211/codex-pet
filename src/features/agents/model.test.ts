@@ -65,6 +65,34 @@ describe("agent session registry", () => {
     });
   });
 
+  it("keeps a Claude session completed after the idle notification", () => {
+    let sessions = updateAgentSessions([], event());
+    sessions = updateAgentSessions(
+      sessions,
+      event({
+        kind: "hook.Stop",
+        state: "success",
+        message: "Claude Code 回合完成",
+        timestamp: 101,
+      }),
+    );
+    sessions = updateAgentSessions(
+      sessions,
+      event({
+        kind: "hook.Notification",
+        state: "success",
+        message: "Claude Code 回合完成",
+        timestamp: 102,
+      }),
+    );
+
+    expect(aggregateAgentSessions(sessions)).toMatchObject({
+      state: "success",
+      running: false,
+      primary: { provider: "claude", sessionId: "session-one" },
+    });
+  });
+
   it("tracks Claude subagents separately and removes them on stop", () => {
     let sessions = updateAgentSessions(
       [],

@@ -528,8 +528,14 @@ fn map_hook_event(provider: HookProvider, captured: &CapturedHookEvent) -> Optio
         "PermissionRequest" => (Some("waiting_input"), format!("{label} 等待权限确认")),
         "PermissionDenied" => (Some("thinking"), format!("{label} 权限请求被拒绝")),
         "Notification" => match captured.notification_type.as_deref() {
-            Some("permission_prompt" | "idle_prompt" | "agent_needs_input") => {
+            Some("permission_prompt") => (Some("waiting_input"), format!("{label} 等待权限确认")),
+            Some("agent_needs_input" | "elicitation_dialog") => {
                 (Some("waiting_input"), format!("{label} 等待输入"))
+            }
+            Some("idle_prompt") => (Some("success"), format!("{label} 回合完成")),
+            Some("agent_completed") => (Some("success"), format!("{label} 后台任务已完成")),
+            Some("elicitation_complete" | "elicitation_response") => {
+                (Some("thinking"), format!("{label} 已收到输入，继续处理"))
             }
             _ => (None, format!("{label} 发出通知")),
         },
@@ -958,6 +964,36 @@ mod tests {
             .expect("map failure")
             .state,
             Some("error")
+        );
+    }
+
+    #[test]
+    fn maps_claude_completion_notifications_to_terminal_states() {
+        let mut idle = captured(HookProvider::Claude, "Notification");
+        idle.notification_type = Some("idle_prompt".to_string());
+        assert_eq!(
+            map_hook_event(HookProvider::Claude, &idle)
+                .expect("map idle notification")
+                .state,
+            Some("success")
+        );
+
+        let mut completed = idle.clone();
+        completed.notification_type = Some("agent_completed".to_string());
+        assert_eq!(
+            map_hook_event(HookProvider::Claude, &completed)
+                .expect("map completed notification")
+                .state,
+            Some("success")
+        );
+
+        let mut needs_input = idle;
+        needs_input.notification_type = Some("agent_needs_input".to_string());
+        assert_eq!(
+            map_hook_event(HookProvider::Claude, &needs_input)
+                .expect("map input notification")
+                .state,
+            Some("waiting_input")
         );
     }
 
