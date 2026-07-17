@@ -1,5 +1,6 @@
 import type { MouseEventHandler, PointerEventHandler } from "react";
 import {
+  Activity,
   EyeOff,
   MousePointer2,
   MousePointer2Off,
@@ -10,12 +11,17 @@ import {
 } from "lucide-react";
 import type { RenderMode } from "../../config/preferences";
 import {
+  agentProviderLabels,
+  agentSessionProject,
+  type AgentSession,
+} from "../agents/model";
+import {
   taskDisplayStatusLabel,
   taskProjectName,
   type TaskRecord,
 } from "../tasks/model";
 import { PetVisualView } from "./PetVisualView";
-import type { PetState, PetVisual } from "./model";
+import { stateLabels, type PetState, type PetVisual } from "./model";
 
 export type PetBubble = {
   tone: "working" | "success" | "error" | "reminder";
@@ -33,6 +39,8 @@ type PetWindowProps = {
   petSize: number;
   bubble: PetBubble | null;
   tasks: TaskRecord[];
+  agentSessions: AgentSession[];
+  hiddenAgentSessionCount: number;
   queuedCount: number;
   contextMenuOpen: boolean;
   clickThrough: boolean;
@@ -56,6 +64,8 @@ export function PetWindow({
   petSize,
   bubble,
   tasks,
+  agentSessions,
+  hiddenAgentSessionCount,
   queuedCount,
   contextMenuOpen,
   clickThrough,
@@ -70,6 +80,25 @@ export function PetWindow({
   onToggleClickThrough,
   onQuit,
 }: PetWindowProps) {
+  const totalProgressCount = tasks.length + agentSessions.length + hiddenAgentSessionCount;
+  const showProgressPanel = tasks.length > 0 || totalProgressCount > 1;
+  const progressSummary = (() => {
+    const pending: string[] = [];
+    if (queuedCount > 0) {
+      pending.push(`${queuedCount} 个排队`);
+    }
+    if (hiddenAgentSessionCount > 0) {
+      pending.push(`${hiddenAgentSessionCount} 个折叠`);
+    }
+    if (pending.length > 0) {
+      return `另有 ${pending.join(" · ")}`;
+    }
+    if (tasks.length > 0 && agentSessions.length > 0) {
+      return `${tasks.length} 个托管 · ${agentSessions.length} 个外部`;
+    }
+    return agentSessions.length > 0 ? "外部会话执行中" : "全部执行中";
+  })();
+
   return (
     <>
       <section
@@ -81,13 +110,16 @@ export function PetWindow({
         onPointerCancel={onPointerEnd}
         onContextMenu={onContextMenu}
       >
-        {tasks.length > 0 && !bubble && (
-          <div className="pet-task-panel" aria-label="并行任务状态">
+        {showProgressPanel && !bubble && (
+          <div
+            className="pet-task-panel"
+            aria-label={`并行任务状态，共 ${totalProgressCount} 个任务`}
+          >
             <div className="pet-task-panel-header">
-              <strong>{tasks.length} 个任务并行</strong>
-              <span aria-live="polite">{queuedCount > 0 ? `另有 ${queuedCount} 个排队` : "全部执行中"}</span>
+              <strong>{totalProgressCount} 个任务并行</strong>
+              <span aria-live="polite">{progressSummary}</span>
             </div>
-            <ul>
+            <ul aria-live="polite">
               {tasks.map((task) => {
                 const projectName = taskProjectName(task.cwd);
                 return (
@@ -112,6 +144,32 @@ export function PetWindow({
                       </span>
                       <SquareTerminal size={14} aria-hidden="true" />
                     </button>
+                  </li>
+                );
+              })}
+              {agentSessions.map((session) => {
+                const projectName = agentSessionProject(session);
+                const providerLabel = agentProviderLabels[session.provider];
+                const stateLabel = stateLabels[session.state];
+                return (
+                  <li key={session.key} data-activity={session.state}>
+                    <div
+                      className="pet-task-session"
+                      title={`${providerLabel} · ${session.cwd ?? session.sessionId}`}
+                      aria-label={`${providerLabel} 的 ${projectName} 会话，当前状态：${stateLabel}`}
+                    >
+                      <span className="pet-task-state" aria-hidden="true" />
+                      <span className="pet-task-copy">
+                        <strong>
+                          {providerLabel} · {projectName}
+                        </strong>
+                        <small>
+                          {stateLabel}
+                          {session.message ? ` · ${session.message}` : ""}
+                        </small>
+                      </span>
+                      <Activity size={14} aria-hidden="true" />
+                    </div>
                   </li>
                 );
               })}

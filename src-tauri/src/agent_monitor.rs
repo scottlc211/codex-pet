@@ -33,6 +33,7 @@ const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "UserPromptSubmit",
     "PreToolUse",
     "PermissionRequest",
+    "PermissionDenied",
     "PostToolUse",
     "PostToolUseFailure",
     "Notification",
@@ -567,10 +568,12 @@ pub(crate) fn install_agent_hook(provider: String) -> Result<AgentHookStatus, St
     let path = hook_config_path(provider)
         .ok_or_else(|| format!("无法确定 {} Hook 配置路径", provider.label()))?;
     let executable = hook_executable_path()?;
-    let command = hook_command(&executable, provider)?;
     match provider {
-        HookProvider::Claude => install_claude_hooks(&path, &command)?,
-        HookProvider::Grok => install_grok_hooks(&path, &command)?,
+        HookProvider::Claude => install_claude_hooks(&path, &executable)?,
+        HookProvider::Grok => {
+            let command = hook_command(&executable, provider)?;
+            install_grok_hooks(&path, &command)?;
+        }
     }
     diagnostics::info("monitor", &format!("installed {} hooks", provider.label()));
     Ok(hook_status(provider))
@@ -662,22 +665,24 @@ fn hook_command(executable: &Path, provider: HookProvider) -> Result<String, Str
     }
 }
 
-fn install_claude_hooks(path: &Path, command: &str) -> Result<(), String> {
+fn install_claude_hooks(path: &Path, executable: &Path) -> Result<(), String> {
     let mut root = read_json_object_or_default(path, "Claude settings")?;
     remove_managed_hooks(&mut root, HookProvider::Claude)?;
     let hooks = ensure_object_field(&mut root, "hooks", "Claude settings.hooks")?;
+    let handler = claude_hook_handler(executable);
     for event in CLAUDE_HOOK_EVENTS {
-        append_hook_group(hooks, event, command)?;
+        append_hook_group(hooks, event, &handler)?;
     }
     write_json_atomically_with_backup_policy(path, &root, path.exists())
 }
 
 fn install_grok_hooks(path: &Path, command: &str) -> Result<(), String> {
+    let handler = shell_hook_handler(command);
     let mut hooks = Map::new();
     for event in GROK_HOOK_EVENTS {
         hooks.insert(
             (*event).to_string(),
-            Value::Array(vec![hook_group(command)]),
+            Value::Array(vec![hook_group(&handler)]),
         );
     }
     let root = json!({ "hooks": hooks });
@@ -727,29 +732,36 @@ fn ensure_object_field<'a>(
 fn append_hook_group(
     hooks: &mut Map<String, Value>,
     event: &str,
-    command: &str,
+    handler: &Value,
 ) -> Result<(), String> {
     let groups = hooks
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| format!("Claude hooks.{event} 必须是数组"))?;
-    groups.push(hook_group(command));
+    groups.push(hook_group(handler));
     Ok(())
 }
 
-fn hook_group(command: &str) -> Value {
+fn claude_hook_handler(executable: &Path) -> Value {
     json!({
-        "hooks": [{
-            "type": "command",
-            "command": command,
-            "timeout": 5
-        }]
+        "type": "command",
+        "command": executable.to_string_lossy(),
+        "args": ["--agent-hook", HookProvider::Claude.id()],
+        "timeout": 5
     })
 }
 
-fn managed_marker(provider: HookProvider) -> String {
-    format!("--agent-hook {}", provider.id())
+fn shell_hook_handler(command: &str) -> Value {
+    json!({
+        "type": "command",
+        "command": command,
+        "timeout": 5
+    })
+}
+
+fn hook_group(handler: &Value) -> Value {
+    json!({ "hooks": [handler.clone()] })
 }
 
 fn config_contains_managed_hook(path: &Path, provider: HookProvider) -> Result<bool, String> {
@@ -757,7 +769,6 @@ fn config_contains_managed_hook(path: &Path, provider: HookProvider) -> Result<b
         return Ok(false);
     }
     let root = read_json_object_or_default(path, "Agent Hook 配置")?;
-    let marker = managed_marker(provider);
     Ok(root
         .get("hooks")
         .and_then(Value::as_object)
@@ -766,24 +777,38 @@ fn config_contains_managed_hook(path: &Path, provider: HookProvider) -> Result<b
                 groups.as_array().is_some_and(|groups| {
                     groups
                         .iter()
-                        .any(|group| group_contains_marker(group, &marker))
+                        .any(|group| group_contains_managed_hook(group, provider))
                 })
             })
         }))
 }
 
-fn group_contains_marker(group: &Value, marker: &str) -> bool {
+fn group_contains_managed_hook(group: &Value, provider: HookProvider) -> bool {
     group
         .get("hooks")
         .and_then(Value::as_array)
         .is_some_and(|handlers| {
-            handlers.iter().any(|handler| {
-                handler
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|command| command.contains(marker))
-            })
+            handlers
+                .iter()
+                .any(|handler| is_managed_handler(handler, provider))
         })
+}
+
+fn is_managed_handler(handler: &Value, provider: HookProvider) -> bool {
+    let legacy_marker = format!("--agent-hook {}", provider.id());
+    let legacy_shell_form = handler
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|command| command.contains(&legacy_marker));
+    let exec_form = handler
+        .get("args")
+        .and_then(Value::as_array)
+        .is_some_and(|args| {
+            args.len() == 2
+                && args[0].as_str() == Some("--agent-hook")
+                && args[1].as_str() == Some(provider.id())
+        });
+    legacy_shell_form || exec_form
 }
 
 fn remove_managed_hooks(root: &mut Value, provider: HookProvider) -> Result<bool, String> {
@@ -793,7 +818,6 @@ fn remove_managed_hooks(root: &mut Value, provider: HookProvider) -> Result<bool
     let hooks = hooks_value
         .as_object_mut()
         .ok_or_else(|| "Claude settings.hooks 必须是 JSON 对象".to_string())?;
-    let marker = managed_marker(provider);
     let mut changed = false;
     for groups_value in hooks.values_mut() {
         let groups = groups_value
@@ -804,12 +828,7 @@ fn remove_managed_hooks(root: &mut Value, provider: HookProvider) -> Result<bool
                 return true;
             };
             let original_len = handlers.len();
-            handlers.retain(|handler| {
-                !handler
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|command| command.contains(&marker))
-            });
+            handlers.retain(|handler| !is_managed_handler(handler, provider));
             if handlers.len() != original_len {
                 changed = true;
             }
@@ -948,13 +967,12 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(
             &path,
-            r#"{"theme":"dark","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"check.sh"}]}]}}"#,
+            r#"{"theme":"dark","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"check.sh"}]},{"hooks":[{"type":"command","command":"'/old/codex pet' --agent-hook claude"}]}]}}"#,
         )
         .expect("write settings");
 
-        install_claude_hooks(&path, "'/app/codex-pet' --agent-hook claude").expect("install hooks");
-        install_claude_hooks(&path, "'/app/codex-pet' --agent-hook claude")
-            .expect("reinstall hooks");
+        install_claude_hooks(&path, Path::new("/app/codex pet")).expect("install hooks");
+        install_claude_hooks(&path, Path::new("/app/codex pet")).expect("reinstall hooks");
         let value: Value = serde_json::from_str(&fs::read_to_string(&path).expect("read settings"))
             .expect("parse settings");
         assert_eq!(value.get("theme").and_then(Value::as_str), Some("dark"));
@@ -962,6 +980,16 @@ mod tests {
             .as_array()
             .expect("pre tool hooks");
         assert_eq!(pre_tool.len(), 2);
+        let managed = pre_tool
+            .iter()
+            .find(|group| group_contains_managed_hook(group, HookProvider::Claude))
+            .expect("managed hook");
+        let handler = &managed["hooks"][0];
+        assert_eq!(handler["command"].as_str(), Some("/app/codex pet"));
+        assert_eq!(
+            handler["args"],
+            json!(["--agent-hook", HookProvider::Claude.id()])
+        );
         assert!(config_contains_managed_hook(&path, HookProvider::Claude).expect("hook status"));
 
         uninstall_claude_hooks(&path).expect("uninstall hooks");
@@ -1016,8 +1044,8 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn unix_hook_command_quotes_single_quotes() {
-        let command = hook_command(Path::new("/tmp/codex pet's/app"), HookProvider::Claude)
+        let command = hook_command(Path::new("/tmp/codex pet's/app"), HookProvider::Grok)
             .expect("build hook command");
-        assert_eq!(command, "'/tmp/codex pet'\"'\"'s/app' --agent-hook claude");
+        assert_eq!(command, "'/tmp/codex pet'\"'\"'s/app' --agent-hook grok");
     }
 }

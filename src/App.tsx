@@ -99,6 +99,7 @@ type DragSession = {
 const petStatusBubbleReserve = 72;
 const petTaskPanelBaseReserve = 38;
 const petTaskPanelRowReserve = 32;
+const maxPetProgressRows = 6;
 const autoTerminal: TerminalOption = { id: autoTerminalId, label: "自动选择" };
 const isSettingsWindow = isTauriRuntime && getCurrentWindow().label === "settings";
 
@@ -187,6 +188,20 @@ function App() {
         .slice(0, taskState.maxConcurrentTasks),
     [taskState.maxConcurrentTasks, taskState.tasks],
   );
+  const petAgentSessions = useMemo(
+    () =>
+      activeAgentSessions.slice(
+        0,
+        Math.max(0, maxPetProgressRows - executingTasks.length),
+      ),
+    [activeAgentSessions, executingTasks.length],
+  );
+  const hiddenAgentSessionCount = Math.max(
+    0,
+    activeAgentSessions.length - petAgentSessions.length,
+  );
+  const showPetProgressPanel = executingTasks.length > 0 || activeAgentSessions.length > 1;
+  const petProgressRowCount = executingTasks.length + petAgentSessions.length;
   const {
     reminderSnapshots,
     reminderDraft,
@@ -225,11 +240,11 @@ function App() {
       ? taskActivityPetState(executingTasks[0].activity)
       : currentState;
   const visiblePetBubble =
-    petBubble?.source === "reminder" || executingTasks.length === 0 ? petBubble : null;
+    petBubble?.source === "reminder" || !showPetProgressPanel ? petBubble : null;
   const petOverlayReserve = visiblePetBubble
     ? petStatusBubbleReserve
-    : executingTasks.length > 0
-      ? petTaskPanelBaseReserve + executingTasks.length * petTaskPanelRowReserve
+    : showPetProgressPanel
+      ? petTaskPanelBaseReserve + petProgressRowCount * petTaskPanelRowReserve
       : 0;
   const visual = useMemo(() => {
     if (!activePet) {
@@ -1127,6 +1142,8 @@ function App() {
           petSize={petSize}
           bubble={visiblePetBubble}
           tasks={executingTasks}
+          agentSessions={petAgentSessions}
+          hiddenAgentSessionCount={hiddenAgentSessionCount}
           queuedCount={taskState.queuedCount}
           contextMenuOpen={contextMenuOpen}
           clickThrough={clickThrough}

@@ -272,11 +272,13 @@ button {
 
 .pet-task-panel li,
 .pet-task-panel button,
+.pet-task-session,
 .pet-task-copy {
   min-width: 0;
 }
 
-.pet-task-panel button {
+.pet-task-panel button,
+.pet-task-session {
   width: 100%;
   min-height: 29px;
   padding: 3px 5px;
@@ -292,6 +294,10 @@ button {
   transition:
     color 160ms ease,
     background-color 160ms ease;
+}
+
+.pet-task-session {
+  cursor: default;
 }
 
 .pet-task-panel button:hover {
@@ -350,7 +356,8 @@ button {
   line-height: 1.15;
 }
 
-.pet-task-panel button > svg {
+.pet-task-panel button > svg,
+.pet-task-session > svg {
   color: #176f68;
 }
 
