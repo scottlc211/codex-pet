@@ -5,6 +5,7 @@ import { normalizeEventState, type PetState } from "../pet/model";
 import { isTauriRuntime, releaseTauriListener } from "../../runtime/tauri";
 import {
   aggregateAgentSessions,
+  resolveAgentPresentation,
   updateAgentSessions,
   type AgentEvent,
   type AgentSession,
@@ -21,6 +22,7 @@ type UseAgentEventsResult = {
   sessions: AgentSession[];
   currentState: PetState;
   running: boolean;
+  dismissTerminalState: () => void;
   pushEvent: (event: AgentEvent) => void;
   setCurrentState: Dispatch<SetStateAction<PetState>>;
 };
@@ -37,11 +39,19 @@ export function useAgentEvents({
   const [currentState, setCurrentState] = useState<PetState>("idle");
   const [running, setRunning] = useState(false);
   const sessionsRef = useRef<AgentSession[]>([]);
+  const terminalDismissedRef = useRef(false);
   const callbacksRef = useRef({ isDragging, onStateMessage });
   callbacksRef.current = { isDragging, onStateMessage };
 
   const pushEvent = useCallback((event: AgentEvent) => {
     setEvents((current) => [...current.slice(-11), event]);
+  }, []);
+
+  const dismissTerminalState = useCallback(() => {
+    terminalDismissedRef.current = true;
+    setCurrentState((current) =>
+      current === "success" || current === "error" ? "idle" : current,
+    );
   }, []);
 
   useEffect(() => {
@@ -61,6 +71,15 @@ export function useAgentEvents({
       setRunning(aggregate.running);
 
       if (nextState === null) {
+        return;
+      }
+      const presentation = resolveAgentPresentation(
+        terminalDismissedRef.current,
+        nextState,
+        aggregate.state,
+      );
+      terminalDismissedRef.current = presentation.terminalDismissed;
+      if (presentation.suppress) {
         return;
       }
       if (!callbacksRef.current.isDragging()) {
@@ -97,6 +116,7 @@ export function useAgentEvents({
     sessions,
     currentState,
     running,
+    dismissTerminalState,
     pushEvent,
     setCurrentState,
   };

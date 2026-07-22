@@ -164,6 +164,7 @@ function App() {
     currentState,
     sessions: agentSessions,
     running: agentRunning,
+    dismissTerminalState,
     pushEvent,
     setCurrentState,
   } =
@@ -686,7 +687,7 @@ function App() {
     const closingBubble = petBubble;
     setPetBubble(null);
     if (closingBubble?.source !== "reminder" && (currentState === "success" || currentState === "error")) {
-      setCurrentState("idle");
+      dismissTerminalState();
     }
   }
 

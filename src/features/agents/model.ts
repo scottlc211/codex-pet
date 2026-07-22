@@ -61,8 +61,26 @@ const statePriority: Partial<Record<PetState, number>> = {
 
 const maxSessionAgeMs = 30 * 60 * 1000;
 
+export type AgentPresentation = {
+  terminalDismissed: boolean;
+  suppress: boolean;
+};
+
 export function isAgentSessionActive(session: AgentSession) {
   return activeAgentStates.has(session.state);
+}
+
+export function resolveAgentPresentation(
+  terminalDismissed: boolean,
+  eventState: PetState,
+  aggregateState: PetState,
+): AgentPresentation {
+  const nextTerminalDismissed = activeAgentStates.has(eventState) ? false : terminalDismissed;
+  return {
+    terminalDismissed: nextTerminalDismissed,
+    suppress:
+      nextTerminalDismissed && (aggregateState === "success" || aggregateState === "error"),
+  };
 }
 
 export function updateAgentSessions(

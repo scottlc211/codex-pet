@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateAgentSessions,
+  resolveAgentPresentation,
   updateAgentSessions,
   type AgentEvent,
   type AgentSession,
@@ -140,5 +141,27 @@ describe("agent session registry", () => {
         event({ kind: "hook.SessionEnd", sessionId: "s", state: "idle", timestamp: 101 }),
       ),
     ).toEqual([]);
+  });
+});
+
+describe("agent terminal presentation", () => {
+  it("keeps delayed terminal events hidden after dismissal", () => {
+    expect(resolveAgentPresentation(true, "success", "success")).toEqual({
+      terminalDismissed: true,
+      suppress: true,
+    });
+    expect(resolveAgentPresentation(true, "idle", "success")).toEqual({
+      terminalDismissed: true,
+      suppress: true,
+    });
+  });
+
+  it("allows terminal presentation again after new activity", () => {
+    const active = resolveAgentPresentation(true, "thinking", "thinking");
+    expect(active).toEqual({ terminalDismissed: false, suppress: false });
+    expect(resolveAgentPresentation(active.terminalDismissed, "success", "success")).toEqual({
+      terminalDismissed: false,
+      suppress: false,
+    });
   });
 });
