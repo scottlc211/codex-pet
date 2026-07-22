@@ -1,5 +1,15 @@
 import type { CSSProperties, PointerEventHandler, ReactNode } from "react";
-import { Bell, Minus, Palette, Power, SlidersHorizontal, Terminal, X } from "lucide-react";
+import {
+  Bell,
+  EyeOff,
+  Maximize2,
+  Minus,
+  Minimize2,
+  Palette,
+  Power,
+  SlidersHorizontal,
+  Terminal,
+} from "lucide-react";
 
 export type SettingsSection = "general" | "theme" | "reminder" | "work";
 
@@ -12,8 +22,10 @@ type SettingsWindowProps = {
   children: ReactNode;
   overlay?: ReactNode;
   onSectionChange: (section: SettingsSection) => void;
-  onClose: () => void;
+  onHide: () => void;
   onMinimize: () => void;
+  onMaximize: () => void;
+  maximized: boolean;
   onQuit: () => void;
   onPointerDown: PointerEventHandler<HTMLElement>;
   onPointerMove: PointerEventHandler<HTMLElement>;
@@ -36,8 +48,10 @@ export function SettingsWindow({
   children,
   overlay,
   onSectionChange,
-  onClose,
+  onHide,
   onMinimize,
+  onMaximize,
+  maximized,
   onQuit,
   onPointerDown,
   onPointerMove,
@@ -74,25 +88,56 @@ export function SettingsWindow({
             </button>
           ))}
         </nav>
-        <div className="sidebar-actions">
-          <button className="icon-button" type="button" title="最小化" onClick={onMinimize}>
-            <Minus size={16} />
-          </button>
-          <button className="icon-button danger" type="button" title="退出应用" onClick={onQuit}>
-            <Power size={16} />
-          </button>
-        </div>
       </aside>
 
       <section className="settings-content">
         <header className="settings-content-header settings-drag-handle">
-          <div>
+          <div className="settings-status-summary">
             <span className="status-chip">{statusLabel}</span>
             <p>{latestMessage}</p>
           </div>
-          <button className="icon-button" type="button" title="关闭设置" onClick={onClose}>
-            <X size={16} />
-          </button>
+          <div className="window-controls" role="group" aria-label="窗口控制">
+            <button
+              className="window-control-button"
+              type="button"
+              title="隐藏窗口"
+              aria-label="隐藏窗口"
+              onClick={onHide}
+            >
+              <EyeOff size={15} aria-hidden="true" />
+            </button>
+            <button
+              className="window-control-button"
+              type="button"
+              title="最小化窗口"
+              aria-label="最小化窗口"
+              onClick={onMinimize}
+            >
+              <Minus size={15} aria-hidden="true" />
+            </button>
+            <button
+              className="window-control-button"
+              type="button"
+              title={maximized ? "还原窗口" : "最大化窗口"}
+              aria-label={maximized ? "还原窗口" : "最大化窗口"}
+              onClick={onMaximize}
+            >
+              {maximized ? (
+                <Minimize2 size={14} aria-hidden="true" />
+              ) : (
+                <Maximize2 size={14} aria-hidden="true" />
+              )}
+            </button>
+            <button
+              className="window-control-button danger"
+              type="button"
+              title="退出应用"
+              aria-label="退出应用"
+              onClick={onQuit}
+            >
+              <Power size={15} aria-hidden="true" />
+            </button>
+          </div>
         </header>
         {children}
       </section>

@@ -141,6 +141,7 @@ function App() {
   const [terminals, setTerminals] = useState<TerminalOption[]>([autoTerminal]);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(isSettingsWindow);
+  const [settingsMaximized, setSettingsMaximized] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [settingsModalPosition, setSettingsModalPosition] = useState<ModalPosition | null>(null);
   const [task, setTask] = useState("");
@@ -427,6 +428,24 @@ function App() {
         recordDiagnosticEvent("error", "windows", `failed to resize pet window: ${String(error)}`);
       });
   }, [petContainerWidth, petContainerHeight, petOverlayReserve]);
+
+  useEffect(() => {
+    if (!isTauriRuntime || !isSettingsWindow) {
+      setSettingsMaximized(false);
+      return;
+    }
+
+    const appWindow = getCurrentWindow();
+    const syncMaximizedState = () => {
+      void appWindow
+        .isMaximized()
+        .then(setSettingsMaximized)
+        .catch(() => undefined);
+    };
+    syncMaximizedState();
+    const unlistenResized = appWindow.onResized(syncMaximizedState);
+    return () => releaseTauriListener(unlistenResized);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -931,10 +950,37 @@ function App() {
     setSettingsModalPosition(null);
   }
 
-  async function minimizeWindow() {
-    if (isTauriRuntime) {
-      await getCurrentWindow().minimize();
+  function minimizeWindow() {
+    if (!isTauriRuntime || !isSettingsWindow) {
+      return;
     }
+    void getCurrentWindow().minimize().catch((error) => {
+      pushEvent({ kind: "settings.minimize.error", message: String(error), state: "error" });
+      recordDiagnosticEvent(
+        "error",
+        "windows",
+        `failed to minimize settings window: ${String(error)}`,
+      );
+    });
+  }
+
+  function toggleMaximizeWindow() {
+    if (!isTauriRuntime || !isSettingsWindow) {
+      return;
+    }
+    const appWindow = getCurrentWindow();
+    void appWindow
+      .toggleMaximize()
+      .then(() => appWindow.isMaximized())
+      .then(setSettingsMaximized)
+      .catch((error) => {
+        pushEvent({ kind: "settings.maximize.error", message: String(error), state: "error" });
+        recordDiagnosticEvent(
+          "error",
+          "windows",
+          `failed to toggle settings window maximize state: ${String(error)}`,
+        );
+      });
   }
 
   function quitApplication() {
@@ -1231,8 +1277,10 @@ function App() {
           statusLabel={statusLabel}
           latestMessage={latestMessage}
           onSectionChange={setSettingsSection}
-          onClose={closeSettings}
+          onHide={closeSettings}
           onMinimize={minimizeWindow}
+          onMaximize={toggleMaximizeWindow}
+          maximized={settingsMaximized}
           onQuit={quitApplication}
           onPointerDown={startSettingsModalDrag}
           onPointerMove={moveSettingsModal}

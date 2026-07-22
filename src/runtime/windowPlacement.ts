@@ -111,6 +111,10 @@ async function restoreCurrentWindowPlacement(label: WindowLabel, restoreSize: bo
 
 async function saveCurrentWindowPlacement(label: WindowLabel) {
   const appWindow = getCurrentWindow();
+  const maximized = await appWindow.isMaximized().catch(() => false);
+  if (maximized) {
+    return;
+  }
   const [position, size, monitor] = await Promise.all([
     appWindow.outerPosition(),
     appWindow.outerSize(),
