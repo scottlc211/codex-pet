@@ -19,6 +19,7 @@ static HOOK_MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const HOOK_SCHEMA_VERSION: u8 = 1;
+const HOOK_INBOX_ENV: &str = "CODEX_PET_HOOK_INBOX";
 const HOOK_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_HOOK_INPUT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_HOOK_FILES_PER_POLL: usize = 256;
@@ -578,7 +579,9 @@ pub(crate) fn install_agent_hook(provider: String) -> Result<AgentHookStatus, St
         HookProvider::Claude => install_claude_hooks(&path, &executable)?,
         HookProvider::Grok => {
             let command = hook_command(&executable, provider)?;
-            install_grok_hooks(&path, &command)?;
+            let inbox = hook_inbox_dir()
+                .ok_or_else(|| "无法确定 Grok Build Hook 收件箱路径".to_string())?;
+            install_grok_hooks(&path, &command, &inbox)?;
         }
     }
     diagnostics::info("monitor", &format!("installed {} hooks", provider.label()));
@@ -616,7 +619,7 @@ fn hook_status(provider: HookProvider) -> AgentHookStatus {
             error: Some("无法确定用户目录".to_string()),
         };
     };
-    match config_contains_managed_hook(&path, provider) {
+    match config_is_current(&path, provider) {
         Ok(installed) => AgentHookStatus {
             provider: provider.id().to_string(),
             installed,
@@ -633,7 +636,19 @@ fn hook_status(provider: HookProvider) -> AgentHookStatus {
 }
 
 fn hook_inbox_dir() -> Option<PathBuf> {
-    home_dir().map(|home| home.join(".codex-pet").join("agent-events"))
+    let configured = env::var_os(HOOK_INBOX_ENV).map(PathBuf::from);
+    let path = select_hook_inbox_dir(configured, home_dir())?;
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        env::current_dir().ok().map(|current| current.join(path))
+    }
+}
+
+fn select_hook_inbox_dir(configured: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    configured
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| home.map(|path| path.join(".codex-pet").join("agent-events")))
 }
 
 fn hook_config_path(provider: HookProvider) -> Option<PathBuf> {
@@ -659,16 +674,22 @@ fn hook_command(executable: &Path, provider: HookProvider) -> Result<String, Str
     let path = executable.to_string_lossy();
     #[cfg(target_os = "windows")]
     {
-        if path.contains(['"', '%', '!']) {
-            return Err("Codex Pet 安装路径包含 Hook 命令不支持的字符".to_string());
-        }
-        Ok(format!("\"{path}\" --agent-hook {}", provider.id()))
+        windows_hook_command(&path, provider)
     }
     #[cfg(not(target_os = "windows"))]
     {
         let quoted = format!("'{}'", path.replace('\'', "'\"'\"'"));
         Ok(format!("{quoted} --agent-hook {}", provider.id()))
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_hook_command(path: &str, provider: HookProvider) -> Result<String, String> {
+    if path.contains(['"', '%', '!']) {
+        return Err("Codex Pet 安装路径包含 Hook 命令不支持的字符".to_string());
+    }
+    // Grok Build 在 Windows 上通过 PowerShell 执行 command，带空格的路径需要调用运算符。
+    Ok(format!("& \"{path}\" --agent-hook {}", provider.id()))
 }
 
 fn install_claude_hooks(path: &Path, executable: &Path) -> Result<(), String> {
@@ -682,8 +703,8 @@ fn install_claude_hooks(path: &Path, executable: &Path) -> Result<(), String> {
     write_json_atomically_with_backup_policy(path, &root, path.exists())
 }
 
-fn install_grok_hooks(path: &Path, command: &str) -> Result<(), String> {
-    let handler = shell_hook_handler(command);
+fn install_grok_hooks(path: &Path, command: &str, inbox: &Path) -> Result<(), String> {
+    let handler = shell_hook_handler(command, inbox);
     let mut hooks = Map::new();
     for event in GROK_HOOK_EVENTS {
         hooks.insert(
@@ -758,10 +779,13 @@ fn claude_hook_handler(executable: &Path) -> Value {
     })
 }
 
-fn shell_hook_handler(command: &str) -> Value {
+fn shell_hook_handler(command: &str, inbox: &Path) -> Value {
     json!({
         "type": "command",
         "command": command,
+        "env": {
+            (HOOK_INBOX_ENV): inbox.to_string_lossy()
+        },
         "timeout": 5
     })
 }
@@ -787,6 +811,63 @@ fn config_contains_managed_hook(path: &Path, provider: HookProvider) -> Result<b
                 })
             })
         }))
+}
+
+fn config_is_current(path: &Path, provider: HookProvider) -> Result<bool, String> {
+    if provider == HookProvider::Claude {
+        return config_contains_managed_hook(path, provider);
+    }
+
+    let executable = hook_executable_path()?;
+    let command = hook_command(&executable, provider)?;
+    let inbox =
+        hook_inbox_dir().ok_or_else(|| "无法确定 Grok Build Hook 收件箱路径".to_string())?;
+    let inbox = inbox.to_string_lossy();
+    config_contains_current_grok_hooks(path, &command, inbox.as_ref())
+}
+
+fn config_contains_current_grok_hooks(
+    path: &Path,
+    command: &str,
+    inbox: &str,
+) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let root = read_json_object_or_default(path, "Agent Hook 配置")?;
+    let Some(hooks) = root.get("hooks").and_then(Value::as_object) else {
+        return Ok(false);
+    };
+
+    Ok(GROK_HOOK_EVENTS.iter().all(|event| {
+        hooks
+            .get(*event)
+            .and_then(Value::as_array)
+            .is_some_and(|groups| {
+                groups.iter().any(|group| {
+                    group
+                        .get("hooks")
+                        .and_then(Value::as_array)
+                        .is_some_and(|handlers| {
+                            handlers
+                                .iter()
+                                .any(|handler| is_current_grok_handler(handler, command, inbox))
+                        })
+                })
+            })
+    }))
+}
+
+fn is_current_grok_handler(handler: &Value, command: &str, inbox: &str) -> bool {
+    handler.get("type").and_then(Value::as_str) == Some("command")
+        && handler.get("command").and_then(Value::as_str) == Some(command)
+        && handler
+            .get("env")
+            .and_then(Value::as_object)
+            .and_then(|env| env.get(HOOK_INBOX_ENV))
+            .and_then(Value::as_str)
+            == Some(inbox)
 }
 
 fn group_contains_managed_hook(group: &Value, provider: HookProvider) -> bool {
@@ -920,15 +1001,23 @@ mod tests {
     }
 
     #[test]
-    fn maps_grok_native_tool_names_to_activity_states() {
+    fn parses_documented_grok_payload_and_maps_native_tool_names() {
         let value = json!({
             "hookEventName": "pre_tool_use",
             "sessionId": "grok-session",
             "cwd": "/workspace/project",
-            "toolName": "run_terminal_command"
+            "workspaceRoot": "/workspace/project",
+            "toolName": "run_terminal_command",
+            "toolUseId": "tool-1",
+            "toolInputTruncated": false,
+            "timestamp": "2026-04-14T12:00:00Z"
         });
         let command = parse_hook_payload(HookProvider::Grok, &value).expect("parse Grok hook");
+        assert_eq!(command.provider, "grok");
         assert_eq!(command.event_name, "PreToolUse");
+        assert_eq!(command.session_id, "grok-session");
+        assert_eq!(command.cwd.as_deref(), Some("/workspace/project"));
+        assert_eq!(command.tool_name.as_deref(), Some("run_terminal_command"));
         assert_eq!(
             map_hook_event(HookProvider::Grok, &command)
                 .expect("map Grok command")
@@ -943,6 +1032,113 @@ mod tests {
                 .expect("map Grok edit")
                 .state,
             Some("editing_file")
+        );
+    }
+
+    #[test]
+    fn configured_hook_inbox_takes_precedence_over_home() {
+        let configured = PathBuf::from("/configured/agent-events");
+        let home = PathBuf::from("/home/user");
+
+        assert_eq!(
+            select_hook_inbox_dir(Some(configured.clone()), Some(home.clone())),
+            Some(configured)
+        );
+        assert_eq!(
+            select_hook_inbox_dir(None, Some(home.clone())),
+            Some(home.join(".codex-pet").join("agent-events"))
+        );
+    }
+
+    #[test]
+    fn windows_grok_hook_command_uses_powershell_call_operator() {
+        let command =
+            windows_hook_command(r"D:\AI_studio\Codex Pet\codex-pet.exe", HookProvider::Grok)
+                .expect("build Windows hook command");
+
+        assert_eq!(
+            command,
+            r#"& "D:\AI_studio\Codex Pet\codex-pet.exe" --agent-hook grok"#
+        );
+    }
+
+    #[test]
+    fn grok_install_injects_explicit_inbox_for_every_event() {
+        let directory = tempfile::tempdir().expect("create temp dir");
+        let path = directory.path().join("codex-pet.json");
+        let inbox = directory.path().join("agent-events");
+        let command = r#"& "C:\Program Files\Codex Pet\codex-pet.exe" --agent-hook grok"#;
+
+        install_grok_hooks(&path, command, &inbox).expect("install Grok hooks");
+        let mut value: Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read hooks"))
+                .expect("parse hooks");
+        let expected_inbox = inbox.to_string_lossy();
+
+        for event in GROK_HOOK_EVENTS {
+            let handler = &value["hooks"][*event][0]["hooks"][0];
+            assert_eq!(
+                handler["env"][HOOK_INBOX_ENV].as_str(),
+                Some(expected_inbox.as_ref())
+            );
+            assert!(is_current_grok_handler(
+                handler,
+                command,
+                expected_inbox.as_ref()
+            ));
+        }
+        assert!(
+            config_contains_current_grok_hooks(&path, command, expected_inbox.as_ref())
+                .expect("check current Grok config")
+        );
+
+        let legacy = json!({
+            "type": "command",
+            "command": command,
+            "timeout": 5
+        });
+        assert!(!is_current_grok_handler(
+            &legacy,
+            command,
+            expected_inbox.as_ref()
+        ));
+
+        let legacy_windows_command = json!({
+            "type": "command",
+            "command": r#""C:\Program Files\Codex Pet\codex-pet.exe" --agent-hook grok"#,
+            "env": { (HOOK_INBOX_ENV): expected_inbox.as_ref() },
+            "timeout": 5
+        });
+        assert!(!is_current_grok_handler(
+            &legacy_windows_command,
+            command,
+            expected_inbox.as_ref()
+        ));
+
+        let wrong_type = json!({
+            "type": "http",
+            "command": command,
+            "env": { (HOOK_INBOX_ENV): expected_inbox.as_ref() },
+            "timeout": 5
+        });
+        assert!(!is_current_grok_handler(
+            &wrong_type,
+            command,
+            expected_inbox.as_ref()
+        ));
+
+        value["hooks"]["SessionStart"][0]["hooks"][0]
+            .as_object_mut()
+            .expect("SessionStart handler")
+            .remove("env");
+        fs::write(
+            &path,
+            serde_json::to_vec(&value).expect("serialize legacy hooks"),
+        )
+        .expect("write legacy hooks");
+        assert!(
+            !config_contains_current_grok_hooks(&path, command, expected_inbox.as_ref())
+                .expect("check legacy Grok config")
         );
     }
 

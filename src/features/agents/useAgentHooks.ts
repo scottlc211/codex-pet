@@ -49,9 +49,12 @@ export function useAgentHooks({ enabled, pushEvent }: UseAgentHooksOptions) {
       pushEvent({
         provider: "system",
         kind: installed ? "hook.installed" : "hook.uninstalled",
-        message: `${provider === "claude" ? "Claude Code" : "Grok Build"} 监听已${
-          installed ? "启用" : "停用"
-        }`,
+        message:
+          provider === "grok" && installed
+            ? "Grok Build 监听已启用；请重启 Grok Build，或在 /hooks 中按 r 重新加载"
+            : `${provider === "claude" ? "Claude Code" : "Grok Build"} 监听已${
+                installed ? "启用" : "停用"
+              }`,
         state: "idle",
       });
     } catch (error) {
