@@ -22,9 +22,11 @@ import {
 import {
   agentProviderLabels,
   agentSessionProject,
+  hookProviders,
   type AgentEvent,
   type AgentHookStatus,
   type AgentSession,
+  type HookProvider,
 } from "../agents/model";
 import { stateLabels } from "../pet/model";
 import {
@@ -67,7 +69,7 @@ type WorkSettingsProps = {
   onOpenTaskTerminal: (taskId: string) => void;
   onCancelTask: (taskId: string) => void;
   onClearTaskHistory: () => void;
-  onSetAgentHookInstalled: (provider: "claude" | "grok", installed: boolean) => void;
+  onSetAgentHookInstalled: (provider: HookProvider, installed: boolean) => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
 };
 
@@ -116,11 +118,14 @@ export function WorkSettings({
           <span aria-live="polite">{agentSessions.length} 个活跃会话</span>
         </div>
         <div className="agent-hook-list">
-          {(["claude", "grok"] as const).map((provider) => {
+          {hookProviders.map((provider) => {
             const status = agentHookStatuses.find((item) => item.provider === provider);
             const busy = agentHookBusyProvider === provider;
             const pending = !status;
             const label = agentProviderLabels[provider];
+            // DSH 的监听是 host 插件，装上后必须重启 dsh 才会加载。
+            const installedLabel =
+              provider === "dsh" ? "已接入 · 重启 DSH 生效" : "已接入";
             return (
               <div className="agent-hook-row" key={provider} data-installed={status?.installed ?? false}>
                 <div>
@@ -134,7 +139,8 @@ export function WorkSettings({
                     <small title={status?.error ?? status?.configPath}>
                       {pending
                         ? "检查中"
-                        : (status.error ?? (status.installed ? "已接入" : "未接入"))}
+                        : (status.error ??
+                          (status.installed ? installedLabel : "未接入"))}
                     </small>
                   </span>
                 </div>

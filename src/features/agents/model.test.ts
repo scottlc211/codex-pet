@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentProviderLabels,
   aggregateAgentSessions,
+  hookProviders,
   resolveAgentPresentation,
   updateAgentSessions,
   type AgentEvent,
@@ -112,8 +114,7 @@ describe("agent session registry", () => {
     expect(sessions).toHaveLength(0);
   });
 
-  it("removes every child when the provider session ends", () => {
-    const sessions: AgentSession[] = [
+  it("removes every child when the provider session ends", () => {    const sessions: AgentSession[] = [
       {
         key: "claude:s:a",
         provider: "claude",
@@ -141,6 +142,56 @@ describe("agent session registry", () => {
         event({ kind: "hook.SessionEnd", sessionId: "s", state: "idle", timestamp: 101 }),
       ),
     ).toEqual([]);
+  });
+
+  it("tracks a DSH session from bridge events and clears it on session end", () => {
+    let sessions = updateAgentSessions(
+      [],
+      event({
+        provider: "dsh",
+        kind: "hook.PreToolUse",
+        message: "DSH 正在执行命令：pwsh",
+        state: "running_command",
+        sessionId: "dsh-session",
+      }),
+    );
+    expect(aggregateAgentSessions(sessions)).toMatchObject({
+      state: "running_command",
+      running: true,
+      primary: { provider: "dsh", sessionId: "dsh-session" },
+    });
+
+    // 桥接方把 aborted 覆盖成 idle：回合结束但不算失败，宠物回到空闲。
+    sessions = updateAgentSessions(
+      sessions,
+      event({
+        provider: "dsh",
+        kind: "hook.Stop",
+        message: "DSH 回合已中止",
+        state: "idle",
+        sessionId: "dsh-session",
+        timestamp: 101,
+      }),
+    );
+    expect(aggregateAgentSessions(sessions)).toMatchObject({ state: "idle", running: false });
+
+    sessions = updateAgentSessions(
+      sessions,
+      event({
+        provider: "dsh",
+        kind: "hook.SessionEnd",
+        message: "DSH 会话已关闭",
+        state: "idle",
+        sessionId: "dsh-session",
+        timestamp: 102,
+      }),
+    );
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("exposes DSH in the hook provider list and labels", () => {
+    expect(hookProviders).toContain("dsh");
+    expect(agentProviderLabels.dsh).toBe("DSH");
   });
 });
 

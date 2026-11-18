@@ -91,6 +91,27 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_extension(backup_extension)
 }
 
+/// 纯文本的原子写入：同目录临时文件 → fsync → 替换目标文件。
+/// 用于释放内嵌资源（如 DSH 桥接插件）和改写非 JSON 配置。
+pub(crate) fn write_text_atomically(path: &Path, contents: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无效的文件路径：{}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| format!("创建配置目录失败：{error}"))?;
+
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("创建配置临时文件失败：{error}"))?;
+    temp.write_all(contents.as_bytes())
+        .map_err(|error| format!("写入配置临时文件失败：{error}"))?;
+    temp.as_file_mut()
+        .sync_all()
+        .map_err(|error| format!("同步配置临时文件失败：{error}"))?;
+
+    temp.persist(path)
+        .map_err(|error| format!("替换配置文件失败：{}", error.error))?;
+    sync_parent_directory(parent)
+}
+
 #[cfg(unix)]
 fn sync_parent_directory(parent: &Path) -> Result<(), String> {
     fs::File::open(parent)

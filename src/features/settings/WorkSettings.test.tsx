@@ -59,6 +59,7 @@ describe("WorkSettings", () => {
         agentHookStatuses={[
           { provider: "claude", installed: true, configPath: "/home/test/.claude/settings.json", error: null },
           { provider: "grok", installed: false, configPath: "/home/test/.grok/hooks/codex-pet.json", error: null },
+          { provider: "dsh", installed: true, configPath: "/home/test/.dsh/profiles/desktop/node_modules/dsh-codex-pet-bridge", error: null },
         ]}
         agentHookBusyProvider={null}
         taskState={taskState}
@@ -86,6 +87,9 @@ describe("WorkSettings", () => {
     expect(markup).toContain('aria-label="打开 codex-pet 的任务终端，当前状态：编辑"');
     expect(markup).toContain("Claude Code");
     expect(markup).toContain("已接入");
+    // DSH 的监听是 host 插件，装完要重启 dsh 才生效，界面上要写清楚。
+    expect(markup).toContain("DSH");
+    expect(markup).toContain("重启 DSH 生效");
     expect(markup).toContain("1 个活跃会话");
   });
 });

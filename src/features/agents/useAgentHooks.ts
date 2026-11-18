@@ -1,11 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { isTauriRuntime } from "../../runtime/tauri";
-import type { AgentEvent, AgentHookStatus } from "./model";
+import { agentProviderLabels, type AgentEvent, type AgentHookStatus, type HookProvider } from "./model";
 
 type UseAgentHooksOptions = {
   enabled: boolean;
   pushEvent: (event: AgentEvent) => void;
+};
+
+/** 装/卸监听后需要重启对应宿主才生效的说明。 */
+const restartHints: Partial<Record<HookProvider, string>> = {
+  grok: "请重启 Grok Build，或在 /hooks 中按 r 重新加载",
+  // DSH 的监听是一个 host 插件，只有重启 dsh 才会加载新插件。
+  dsh: "请重启 DSH 使其加载桥接插件",
 };
 
 export function useAgentHooks({ enabled, pushEvent }: UseAgentHooksOptions) {
@@ -32,7 +39,7 @@ export function useAgentHooks({ enabled, pushEvent }: UseAgentHooksOptions) {
     void refresh();
   }, [refresh]);
 
-  async function setHookInstalled(provider: "claude" | "grok", installed: boolean) {
+  async function setHookInstalled(provider: HookProvider, installed: boolean) {
     if (!isTauriRuntime || busyProvider) {
       return;
     }
@@ -46,15 +53,13 @@ export function useAgentHooks({ enabled, pushEvent }: UseAgentHooksOptions) {
         status,
         ...current.filter((item) => item.provider !== provider),
       ]);
+      const hint = installed ? restartHints[provider] : undefined;
       pushEvent({
         provider: "system",
         kind: installed ? "hook.installed" : "hook.uninstalled",
-        message:
-          provider === "grok" && installed
-            ? "Grok Build 监听已启用；请重启 Grok Build，或在 /hooks 中按 r 重新加载"
-            : `${provider === "claude" ? "Claude Code" : "Grok Build"} 监听已${
-                installed ? "启用" : "停用"
-              }`,
+        message: `${agentProviderLabels[provider]} 监听已${
+          installed ? "启用" : "停用"
+        }${hint ? `；${hint}` : ""}`,
         state: "idle",
       });
     } catch (error) {

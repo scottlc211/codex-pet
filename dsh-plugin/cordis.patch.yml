@@ -1,0 +1,10 @@
+# dsh-codex-pet-bridge bundle patch: 把 dsh 的运行进度转成 Codex Pet 的 Hook 事件。
+#
+# 作为「一个 insert」整体挂在 profile 根上，排在 dsh-base / dsh-web-app 之后。
+# 用户自己的 profile cordis.patch.yml 在其后应用，可以按 id 覆盖本行的 config。
+#
+# `name` 必须等于 package.json 的 `name`：loader 会用这个名字去 profile 的
+# node_modules 里解析插件模块。
+- insert:
+    - id: dsh-codex-pet-bridge
+      name: dsh-codex-pet-bridge

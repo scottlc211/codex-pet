@@ -1,7 +1,13 @@
 import { normalizeEventState, type PetState } from "../pet/model";
 
-export type AgentProvider = "codex" | "claude" | "grok" | "system";
+export type AgentProvider = "codex" | "claude" | "grok" | "dsh" | "system";
 export type TrackableAgentProvider = Exclude<AgentProvider, "system">;
+
+/** 支持「装/卸监听」操作的 provider；Codex 走日志 tail，不在此列。 */
+export type HookProvider = "claude" | "grok" | "dsh";
+
+/** 设置页「Agent 监听」区块的行顺序。 */
+export const hookProviders: HookProvider[] = ["claude", "grok", "dsh"];
 
 export type AgentEvent = {
   provider?: AgentProvider;
@@ -26,7 +32,7 @@ export type AgentSession = {
 };
 
 export type AgentHookStatus = {
-  provider: "claude" | "grok";
+  provider: HookProvider;
   installed: boolean;
   configPath: string;
   error: string | null;
@@ -36,6 +42,7 @@ export const agentProviderLabels: Record<AgentProvider, string> = {
   codex: "Codex",
   claude: "Claude Code",
   grok: "Grok Build",
+  dsh: "DSH",
   system: "系统",
 };
 
