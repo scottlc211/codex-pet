@@ -24,7 +24,10 @@ chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# zip 2.x 有 6 条 RUSTSEC 公告（含 RUSTSEC-2026-0369 的 9.1 严重等级，均要求 >=9.0.5）。
+# 这里只需要「读」zip：关掉默认特性，只留 flate2 的纯 Rust zlib-rs 后端
+# （不引入 zopfli/zstd/bzip2/lzma，也不需要系统 zlib）。
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

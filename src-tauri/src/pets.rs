@@ -761,8 +761,12 @@ fn extract_zip_to_dir(source: &Path, target_dir: &Path) -> Result<(), String> {
             continue;
         }
 
-        let relative = safe_relative_path(entry.name())
-            .ok_or_else(|| format!("zip 包含不安全路径：{}", entry.name()))?;
+        // zip 9 起名字解码会失败（非 UTF-8 文件名），比 zip 2 的裸 &str 更严格。
+        let name = entry
+            .name()
+            .map_err(|error| format!("zip 条目名无法解码：{error}"))?;
+        let relative =
+            safe_relative_path(&name).ok_or_else(|| format!("zip 包含不安全路径：{name}"))?;
 
         if !is_allowed_import_file(&relative) {
             continue;
